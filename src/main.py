@@ -21,6 +21,7 @@ class MainWindow(QMainWindow):
         self.editor = QTextEdit()
         self.output = QTextEdit()
         self.output.setReadOnly(True)
+        self.output.setPlaceholderText("Результаты анализа будут отображаться здесь")
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.editor)
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
         self.init_menu()
         self.init_toolbar()
 
+        self.statusBar().showMessage("Готово")
         self.editor.document().modificationChanged.connect(self.update_title)
         self.update_title()
         self.resize(900, 600)
@@ -219,6 +221,7 @@ class MainWindow(QMainWindow):
         name = self.current_file if self.current_file else "Безымянный"
         mod = "*" if self.editor.document().isModified() else ""
         self.setWindowTitle(f"Редактор {name}{mod}")
+        self.statusBar().showMessage(name)
 
     def closeEvent(self, event):
         if self.maybe_save():
