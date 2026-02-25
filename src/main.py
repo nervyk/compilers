@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt, QRegularExpression
 from PySide6.QtGui import QAction, QKeySequence, QFont, QSyntaxHighlighter, QTextCharFormat, QColor
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QMainWindow,
     QMessageBox,
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QToolBar,
     QStyle,
+    QVBoxLayout,
 )
 
 
@@ -52,11 +54,61 @@ class BasicHighlighter(QSyntaxHighlighter):
                 self.setFormat(m.capturedStart(), m.capturedLength(), text_format)
 
 
+class TextInfoDialog(QDialog):
+    def __init__(self, title, text, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(700, 500)
+        layout = QVBoxLayout(self)
+        viewer = QTextEdit()
+        viewer.setReadOnly(True)
+        viewer.setPlainText(text)
+        layout.addWidget(viewer)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_file = None
         self.setAcceptDrops(True)
+        self.text_topics = {
+            "Постановка задачи": (
+                "Разработать графическое приложение в виде текстового редактора.\n\n"
+                "Приложение должно содержать меню, панель инструментов, область редактирования "
+                "и область вывода результатов работы языкового процессора.\n\n"
+                "Реализация должна быть кроссплатформенной и подготовленной к дальнейшему "
+                "расширению функционала."
+            ),
+            "Грамматика": (
+                "Пример упрощенной грамматики выражений:\n\n"
+                "<expr> -> <term> ((+|-) <term>)*\n"
+                "<term> -> <factor> ((*|/) <factor>)*\n"
+                "<factor> -> id | number | '(' <expr> ')'\n\n"
+                "Эта информация используется как справочный раздел меню 'Текст'."
+            ),
+            "Классификация грамматики": (
+                "Для лабораторной работы используется контекстно-свободная грамматика.\n\n"
+                "В дальнейшем раздел может быть расширен описанием классификации по Хомскому, "
+                "свойств грамматики и ограничений выбранного метода анализа."
+            ),
+            "Метод анализа": (
+                "На текущем этапе реализован базовый демонстрационный анализ текста.\n\n"
+                "Дальнейшее расширение: лексический и синтаксический анализ входного текста "
+                "с выводом сообщений в нижнюю область результатов."
+            ),
+            "Тестовый пример": (
+                "int a = 10;\n"
+                "float b = 2.5;\n"
+                "if (a > 0) {\n"
+                "    b = b + a;\n"
+                "}\n"
+            ),
+            "Список литературы": (
+                "1. Ахо А., Сети Р., Ульман Д. Компиляторы: принципы, технологии и инструменты.\n"
+                "2. Вирт Н. Построение компиляторов.\n"
+                "3. Документация Qt / PySide6."
+            ),
+        }
 
         self.editor = QTextEdit()
         self.output = QTextEdit()
@@ -100,6 +152,13 @@ class MainWindow(QMainWindow):
 
         self.act_help = QAction("Справка", self)
         self.act_about = QAction("О программе", self)
+        self.act_text_task = QAction("Постановка задачи", self)
+        self.act_text_grammar = QAction("Грамматика", self)
+        self.act_text_classification = QAction("Классификация грамматики", self)
+        self.act_text_method = QAction("Метод анализа", self)
+        self.act_text_example = QAction("Тестовый пример", self)
+        self.act_text_literature = QAction("Список литературы", self)
+        self.act_text_source = QAction("Исходный код программы", self)
 
         self.act_editor_font_inc = QAction("Шрифт редактора +", self)
         self.act_editor_font_dec = QAction("Шрифт редактора -", self)
@@ -140,6 +199,13 @@ class MainWindow(QMainWindow):
 
         self.act_help.triggered.connect(self.show_help)
         self.act_about.triggered.connect(self.show_about)
+        self.act_text_task.triggered.connect(lambda: self.show_text_topic("Постановка задачи"))
+        self.act_text_grammar.triggered.connect(lambda: self.show_text_topic("Грамматика"))
+        self.act_text_classification.triggered.connect(lambda: self.show_text_topic("Классификация грамматики"))
+        self.act_text_method.triggered.connect(lambda: self.show_text_topic("Метод анализа"))
+        self.act_text_example.triggered.connect(lambda: self.show_text_topic("Тестовый пример"))
+        self.act_text_literature.triggered.connect(lambda: self.show_text_topic("Список литературы"))
+        self.act_text_source.triggered.connect(self.show_source_code)
         self.act_editor_font_inc.triggered.connect(lambda: self.change_font_size(self.editor, 1))
         self.act_editor_font_dec.triggered.connect(lambda: self.change_font_size(self.editor, -1))
         self.act_output_font_inc.triggered.connect(lambda: self.change_font_size(self.output, 1))
@@ -164,6 +230,16 @@ class MainWindow(QMainWindow):
         menu_edit.addAction(self.act_delete)
         menu_edit.addSeparator()
         menu_edit.addAction(self.act_select_all)
+
+        menu_text = self.menuBar().addMenu("Текст")
+        menu_text.addAction(self.act_text_task)
+        menu_text.addAction(self.act_text_grammar)
+        menu_text.addAction(self.act_text_classification)
+        menu_text.addAction(self.act_text_method)
+        menu_text.addAction(self.act_text_example)
+        menu_text.addAction(self.act_text_literature)
+        menu_text.addSeparator()
+        menu_text.addAction(self.act_text_source)
 
         menu_help = self.menuBar().addMenu("Справка")
         menu_help.addAction(self.act_help)
@@ -295,10 +371,25 @@ class MainWindow(QMainWindow):
         widget.setFont(font)
         self.statusBar().showMessage(f"Размер шрифта: {size}", 1500)
 
+    def show_text_topic(self, title):
+        dialog = TextInfoDialog(title, self.text_topics.get(title, ""), self)
+        dialog.exec()
+
+    def show_source_code(self):
+        try:
+            with open(__file__, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть исходный код:\n{e}")
+            return
+        dialog = TextInfoDialog("Исходный код программы", text, self)
+        dialog.exec()
+
     def show_help(self):
         text = (
             "Файл: создать, открыть, сохранить, сохранить как, выход.\n"
             "Правка: отмена/повтор, вырезать/копировать/вставить, удалить, выделить все.\n"
+            "Текст: учебные материалы и исходный код программы.\n"
             "Справка: описание функций и окно о программе."
         )
         QMessageBox.information(self, "Справка", text)
