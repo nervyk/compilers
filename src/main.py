@@ -1,7 +1,18 @@
 import sys
 import re
-from PySide6.QtCore import Qt, QRegularExpression, QSize
-from PySide6.QtGui import QAction, QKeySequence, QFont, QSyntaxHighlighter, QTextCharFormat, QColor, QIcon
+from pathlib import Path
+from PySide6.QtCore import Qt, QRegularExpression, QSize, QRect
+from PySide6.QtGui import (
+    QAction,
+    QKeySequence,
+    QFont,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QColor,
+    QIcon,
+    QPainter,
+    QTextFormat,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -9,10 +20,13 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QTextEdit,
+    QPlainTextEdit,
     QSplitter,
     QToolBar,
     QStyle,
     QVBoxLayout,
+    QWidget,
+    QTabWidget,
 )
 
 
@@ -31,16 +45,16 @@ class BasicHighlighter(QSyntaxHighlighter):
             "public", "private", "protected", "switch", "case", "default",
         ]
         for word in keywords:
-            self.rules.append((QRegularExpression(rf"\b{word}\b"), kw))
+            self.rules.append((QRegularExpression(rf"\\b{word}\\b"), kw))
 
         num = QTextCharFormat()
         num.setForeground(QColor("#b00020"))
-        self.rules.append((QRegularExpression(r"\b\d+(\.\d+)?\b"), num))
+        self.rules.append((QRegularExpression(r"\\b\\d+(\\.\\d+)?\\b"), num))
 
         string_fmt = QTextCharFormat()
         string_fmt.setForeground(QColor("#137333"))
-        self.rules.append((QRegularExpression(r'"[^"\n]*"'), string_fmt))
-        self.rules.append((QRegularExpression(r"'[^'\n]*'"), string_fmt))
+        self.rules.append((QRegularExpression(r'"[^"\\n]*"'), string_fmt))
+        self.rules.append((QRegularExpression(r"'[^'\\n]*'"), string_fmt))
 
         comment_fmt = QTextCharFormat()
         comment_fmt.setForeground(QColor("#6a737d"))
@@ -53,6 +67,88 @@ class BasicHighlighter(QSyntaxHighlighter):
             while it.hasNext():
                 m = it.next()
                 self.setFormat(m.capturedStart(), m.capturedLength(), text_format)
+
+
+class LineNumberArea(QWidget):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+
+    def sizeHint(self):
+        return QSize(self.editor.line_number_area_width(), 0)
+
+    def paintEvent(self, event):
+        self.editor.line_number_area_paint_event(event)
+
+
+class CodeEditor(QPlainTextEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.line_number_area = LineNumberArea(self)
+        self.file_path = None
+        self.untitled_id = None
+        self.highlighter = BasicHighlighter(self.document())
+        self.blockCountChanged.connect(self.update_line_number_area_width)
+        self.updateRequest.connect(self.update_line_number_area)
+        self.cursorPositionChanged.connect(self.highlight_current_line)
+        self.update_line_number_area_width(0)
+        self.highlight_current_line()
+
+    def line_number_area_width(self):
+        digits = len(str(max(1, self.blockCount())))
+        return 10 + self.fontMetrics().horizontalAdvance("9") * digits
+
+    def update_line_number_area_width(self, _):
+        self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
+
+    def update_line_number_area(self, rect, dy):
+        if dy:
+            self.line_number_area.scroll(0, dy)
+        else:
+            self.line_number_area.update(0, rect.y(), self.line_number_area.width(), rect.height())
+        if rect.contains(self.viewport().rect()):
+            self.update_line_number_area_width(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        cr = self.contentsRect()
+        self.line_number_area.setGeometry(QRect(cr.left(), cr.top(), self.line_number_area_width(), cr.height()))
+
+    def line_number_area_paint_event(self, event):
+        painter = QPainter(self.line_number_area)
+        painter.fillRect(event.rect(), QColor("#f1f3f4"))
+
+        block = self.firstVisibleBlock()
+        block_number = block.blockNumber()
+        top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bottom = top + round(self.blockBoundingRect(block).height())
+
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                painter.setPen(QColor("#5f6368"))
+                painter.drawText(
+                    0,
+                    top,
+                    self.line_number_area.width() - 4,
+                    self.fontMetrics().height(),
+                    Qt.AlignRight,
+                    str(block_number + 1),
+                )
+            block = block.next()
+            block_number += 1
+            top = bottom
+            bottom = top + round(self.blockBoundingRect(block).height())
+
+    def highlight_current_line(self):
+        if self.isReadOnly():
+            self.setExtraSelections([])
+            return
+        selection = QTextEdit.ExtraSelection()
+        selection.format.setBackground(QColor("#eef4ff"))
+        selection.format.setProperty(QTextFormat.FullWidthSelection, True)
+        selection.cursor = self.textCursor()
+        selection.cursor.clearSelection()
+        self.setExtraSelections([selection])
 
 
 class TextInfoDialog(QDialog):
@@ -70,8 +166,8 @@ class TextInfoDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.current_file = None
         self.setAcceptDrops(True)
+        self.untitled_counter = 1
         self.text_topics = {
             "Постановка задачи": (
                 "Разработать графическое приложение в виде текстового редактора.\n\n"
@@ -111,51 +207,54 @@ class MainWindow(QMainWindow):
             ),
         }
 
-        self.editor = QTextEdit()
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.setTabsClosable(True)
+        self.editor_tabs.setMovable(True)
+        self.editor_tabs.tabCloseRequested.connect(self.close_editor_tab)
+        self.editor_tabs.currentChanged.connect(self.on_editor_tab_changed)
+
         self.output = QTextEdit()
         self.output.setReadOnly(True)
         self.output.setPlaceholderText("Результаты анализа будут отображаться здесь")
-        self.highlighter = BasicHighlighter(self.editor.document())
 
         splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(self.editor)
+        splitter.addWidget(self.editor_tabs)
         splitter.addWidget(self.output)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
-
         self.setCentralWidget(splitter)
 
         self.init_actions()
         self.init_menu()
         self.init_toolbars()
 
+        self.create_editor_tab(make_current=True)
         self.statusBar().showMessage("Готово")
-        self.editor.document().modificationChanged.connect(self.update_title)
         self.update_title()
         self.resize(900, 600)
+
+    def pick_icon(self, theme_names, fallback):
+        for name in theme_names:
+            icon = QIcon.fromTheme(name)
+            if not icon.isNull():
+                return icon
+        return fallback
 
     def init_actions(self):
         style = self.style()
 
-        def pick_icon(theme_names, fallback):
-            for name in theme_names:
-                icon = QIcon.fromTheme(name)
-                if not icon.isNull():
-                    return icon
-            return fallback
-
         self.act_new = QAction(
-            pick_icon(["document-new"], style.standardIcon(QStyle.SP_FileIcon)),
+            self.pick_icon(["document-new"], style.standardIcon(QStyle.SP_FileIcon)),
             "Новый",
             self,
         )
         self.act_open = QAction(
-            pick_icon(["document-open", "folder-open"], style.standardIcon(QStyle.SP_DialogOpenButton)),
+            self.pick_icon(["document-open", "folder-open"], style.standardIcon(QStyle.SP_DialogOpenButton)),
             "Открыть...",
             self,
         )
         self.act_save = QAction(
-            pick_icon(["document-save"], style.standardIcon(QStyle.SP_DialogSaveButton)),
+            self.pick_icon(["document-save"], style.standardIcon(QStyle.SP_DialogSaveButton)),
             "Сохранить",
             self,
         )
@@ -173,7 +272,7 @@ class MainWindow(QMainWindow):
         self.act_help = QAction("Справка", self)
         self.act_about = QAction("О программе", self)
         self.act_run = QAction(
-            pick_icon(["media-playback-start", "system-run"], style.standardIcon(QStyle.SP_MediaPlay)),
+            self.pick_icon(["media-playback-start", "system-run"], style.standardIcon(QStyle.SP_MediaPlay)),
             "Пуск",
             self,
         )
@@ -215,13 +314,13 @@ class MainWindow(QMainWindow):
         self.act_save_as.triggered.connect(self.file_save_as)
         self.act_exit.triggered.connect(self.close)
 
-        self.act_undo.triggered.connect(self.editor.undo)
-        self.act_redo.triggered.connect(self.editor.redo)
-        self.act_cut.triggered.connect(self.editor.cut)
-        self.act_copy.triggered.connect(self.editor.copy)
-        self.act_paste.triggered.connect(self.editor.paste)
+        self.act_undo.triggered.connect(self.edit_undo)
+        self.act_redo.triggered.connect(self.edit_redo)
+        self.act_cut.triggered.connect(self.edit_cut)
+        self.act_copy.triggered.connect(self.edit_copy)
+        self.act_paste.triggered.connect(self.edit_paste)
         self.act_delete.triggered.connect(self.edit_delete)
-        self.act_select_all.triggered.connect(self.editor.selectAll)
+        self.act_select_all.triggered.connect(self.edit_select_all)
 
         self.act_help.triggered.connect(self.show_help)
         self.act_about.triggered.connect(self.show_about)
@@ -233,160 +332,297 @@ class MainWindow(QMainWindow):
         self.act_text_example.triggered.connect(lambda: self.show_text_topic("Тестовый пример"))
         self.act_text_literature.triggered.connect(lambda: self.show_text_topic("Список литературы"))
         self.act_text_source.triggered.connect(self.show_source_code)
-        self.act_editor_font_inc.triggered.connect(lambda: self.change_font_size(self.editor, 1))
-        self.act_editor_font_dec.triggered.connect(lambda: self.change_font_size(self.editor, -1))
+        self.act_editor_font_inc.triggered.connect(lambda: self.change_editor_font_size(1))
+        self.act_editor_font_dec.triggered.connect(lambda: self.change_editor_font_size(-1))
         self.act_output_font_inc.triggered.connect(lambda: self.change_font_size(self.output, 1))
         self.act_output_font_dec.triggered.connect(lambda: self.change_font_size(self.output, -1))
 
     def init_menu(self):
-        menu_file = self.menuBar().addMenu("Файл")
-        menu_file.addAction(self.act_new)
-        menu_file.addAction(self.act_open)
-        menu_file.addAction(self.act_save)
-        menu_file.addAction(self.act_save_as)
-        menu_file.addSeparator()
-        menu_file.addAction(self.act_exit)
+        self.menu_file = self.menuBar().addMenu("Файл")
+        self.menu_file.addAction(self.act_new)
+        self.menu_file.addAction(self.act_open)
+        self.menu_file.addAction(self.act_save)
+        self.menu_file.addAction(self.act_save_as)
+        self.menu_file.addSeparator()
+        self.menu_file.addAction(self.act_exit)
 
-        menu_edit = self.menuBar().addMenu("Правка")
-        menu_edit.addAction(self.act_undo)
-        menu_edit.addAction(self.act_redo)
-        menu_edit.addSeparator()
-        menu_edit.addAction(self.act_cut)
-        menu_edit.addAction(self.act_copy)
-        menu_edit.addAction(self.act_paste)
-        menu_edit.addAction(self.act_delete)
-        menu_edit.addSeparator()
-        menu_edit.addAction(self.act_select_all)
+        self.menu_edit = self.menuBar().addMenu("Правка")
+        self.menu_edit.addAction(self.act_undo)
+        self.menu_edit.addAction(self.act_redo)
+        self.menu_edit.addSeparator()
+        self.menu_edit.addAction(self.act_cut)
+        self.menu_edit.addAction(self.act_copy)
+        self.menu_edit.addAction(self.act_paste)
+        self.menu_edit.addAction(self.act_delete)
+        self.menu_edit.addSeparator()
+        self.menu_edit.addAction(self.act_select_all)
 
-        menu_text = self.menuBar().addMenu("Текст")
-        menu_text.addAction(self.act_text_task)
-        menu_text.addAction(self.act_text_grammar)
-        menu_text.addAction(self.act_text_classification)
-        menu_text.addAction(self.act_text_method)
-        menu_text.addAction(self.act_text_example)
-        menu_text.addAction(self.act_text_literature)
-        menu_text.addSeparator()
-        menu_text.addAction(self.act_text_source)
+        self.menu_text = self.menuBar().addMenu("Текст")
+        self.menu_text.addAction(self.act_text_task)
+        self.menu_text.addAction(self.act_text_grammar)
+        self.menu_text.addAction(self.act_text_classification)
+        self.menu_text.addAction(self.act_text_method)
+        self.menu_text.addAction(self.act_text_example)
+        self.menu_text.addAction(self.act_text_literature)
+        self.menu_text.addSeparator()
+        self.menu_text.addAction(self.act_text_source)
 
         self.menuBar().addAction(self.act_run)
 
-        menu_help = self.menuBar().addMenu("Справка")
-        menu_help.addAction(self.act_help)
-        menu_help.addAction(self.act_about)
+        self.menu_help = self.menuBar().addMenu("Справка")
+        self.menu_help.addAction(self.act_help)
+        self.menu_help.addAction(self.act_about)
 
-        menu_view = self.menuBar().addMenu("Вид")
-        menu_view.addAction(self.act_editor_font_inc)
-        menu_view.addAction(self.act_editor_font_dec)
-        menu_view.addSeparator()
-        menu_view.addAction(self.act_output_font_inc)
-        menu_view.addAction(self.act_output_font_dec)
+        self.menu_view = self.menuBar().addMenu("Вид")
+        self.menu_view.addAction(self.act_editor_font_inc)
+        self.menu_view.addAction(self.act_editor_font_dec)
+        self.menu_view.addSeparator()
+        self.menu_view.addAction(self.act_output_font_inc)
+        self.menu_view.addAction(self.act_output_font_dec)
 
     def init_toolbars(self):
-        toolbar_icons = QToolBar("Быстрые команды")
-        toolbar_icons.setMovable(True)
-        toolbar_icons.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        toolbar_icons.setIconSize(QSize(24, 24))
-        self.addToolBar(toolbar_icons)
+        self.toolbar_icons = QToolBar("Быстрые команды")
+        self.toolbar_icons.setMovable(True)
+        self.toolbar_icons.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.toolbar_icons.setIconSize(QSize(24, 24))
+        self.addToolBar(self.toolbar_icons)
 
-        toolbar_icons.addAction(self.act_new)
-        toolbar_icons.addAction(self.act_open)
-        toolbar_icons.addAction(self.act_save)
-        toolbar_icons.addAction(self.act_run)
+        self.toolbar_icons.addAction(self.act_new)
+        self.toolbar_icons.addAction(self.act_open)
+        self.toolbar_icons.addAction(self.act_save)
+        self.toolbar_icons.addAction(self.act_run)
 
         self.addToolBarBreak()
 
-        toolbar_text = QToolBar("Инструменты")
-        toolbar_text.setMovable(True)
-        toolbar_text.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        self.addToolBar(toolbar_text)
+        self.toolbar_text = QToolBar("Инструменты")
+        self.toolbar_text.setMovable(True)
+        self.toolbar_text.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.addToolBar(self.toolbar_text)
 
-        toolbar_text.addAction(self.act_save_as)
-        toolbar_text.addAction(self.act_exit)
-        toolbar_text.addSeparator()
-        toolbar_text.addAction(self.act_undo)
-        toolbar_text.addAction(self.act_redo)
-        toolbar_text.addSeparator()
-        toolbar_text.addAction(self.act_cut)
-        toolbar_text.addAction(self.act_copy)
-        toolbar_text.addAction(self.act_paste)
-        toolbar_text.addAction(self.act_delete)
-        toolbar_text.addAction(self.act_select_all)
-        toolbar_text.addSeparator()
-        toolbar_text.addAction(self.act_editor_font_inc)
-        toolbar_text.addAction(self.act_editor_font_dec)
-        toolbar_text.addAction(self.act_output_font_inc)
-        toolbar_text.addAction(self.act_output_font_dec)
-        toolbar_text.addSeparator()
-        toolbar_text.addAction(self.act_help)
-        toolbar_text.addAction(self.act_about)
+        self.toolbar_text.addAction(self.act_save_as)
+        self.toolbar_text.addAction(self.act_exit)
+        self.toolbar_text.addSeparator()
+        self.toolbar_text.addAction(self.act_undo)
+        self.toolbar_text.addAction(self.act_redo)
+        self.toolbar_text.addSeparator()
+        self.toolbar_text.addAction(self.act_cut)
+        self.toolbar_text.addAction(self.act_copy)
+        self.toolbar_text.addAction(self.act_paste)
+        self.toolbar_text.addAction(self.act_delete)
+        self.toolbar_text.addAction(self.act_select_all)
+        self.toolbar_text.addSeparator()
+        self.toolbar_text.addAction(self.act_editor_font_inc)
+        self.toolbar_text.addAction(self.act_editor_font_dec)
+        self.toolbar_text.addAction(self.act_output_font_inc)
+        self.toolbar_text.addAction(self.act_output_font_dec)
+        self.toolbar_text.addSeparator()
+        self.toolbar_text.addAction(self.act_help)
+        self.toolbar_text.addAction(self.act_about)
 
-    def maybe_save(self):
-        if not self.editor.document().isModified():
+    def create_editor_tab(self, text="", file_path=None, make_current=True):
+        editor = CodeEditor()
+        editor.setPlainText(text)
+        editor.document().setModified(False)
+        editor.file_path = file_path
+        editor.untitled_id = self.untitled_counter
+        self.untitled_counter += 1
+        editor.document().modificationChanged.connect(lambda _=False, e=editor: self.on_editor_modified(e))
+        editor.cursorPositionChanged.connect(self.update_cursor_status)
+        if self.editor_tabs.count() > 0:
+            current_font = self.current_editor().font()
+            editor.setFont(current_font)
+        index = self.editor_tabs.addTab(editor, "")
+        self.update_editor_tab(index)
+        if make_current:
+            self.editor_tabs.setCurrentIndex(index)
+        return editor
+
+    def current_editor(self):
+        widget = self.editor_tabs.currentWidget()
+        if isinstance(widget, CodeEditor):
+            return widget
+        return None
+
+    def current_file(self):
+        editor = self.current_editor()
+        if not editor:
+            return None
+        return editor.file_path
+
+    def editor_display_name(self, editor):
+        if editor.file_path:
+            name = Path(editor.file_path).name
+        else:
+            name = f"Безымянный {editor.untitled_id}"
+        if editor.document().isModified():
+            name += "*"
+        return name
+
+    def update_editor_tab(self, index):
+        editor = self.editor_tabs.widget(index)
+        if not isinstance(editor, CodeEditor):
+            return
+        title = self.editor_display_name(editor)
+        self.editor_tabs.setTabText(index, title)
+        self.editor_tabs.setTabToolTip(index, editor.file_path or title)
+
+    def on_editor_modified(self, editor):
+        for i in range(self.editor_tabs.count()):
+            if self.editor_tabs.widget(i) is editor:
+                self.update_editor_tab(i)
+                break
+        if editor is self.current_editor():
+            self.update_title()
+
+    def on_editor_tab_changed(self, _index):
+        self.update_title()
+        self.update_cursor_status()
+
+    def close_editor_tab(self, index):
+        editor = self.editor_tabs.widget(index)
+        if not isinstance(editor, CodeEditor):
+            return
+        if not self.maybe_save(editor):
+            return
+        self.editor_tabs.removeTab(index)
+        editor.deleteLater()
+        if self.editor_tabs.count() == 0:
+            self.create_editor_tab(make_current=True)
+        self.update_title()
+
+    def maybe_save(self, editor=None):
+        editor = editor or self.current_editor()
+        if not editor or not editor.document().isModified():
             return True
+        name = editor.file_path or f"Безымянный {editor.untitled_id}"
         msg = QMessageBox(self)
         msg.setWindowTitle("Несохраненные изменения")
-        msg.setText("Сохранить изменения?")
+        msg.setText(f"Сохранить изменения в файле '{name}'?")
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
         msg.setDefaultButton(QMessageBox.Yes)
         res = msg.exec()
         if res == QMessageBox.Yes:
-            return self.file_save()
+            return self.file_save(editor=editor)
         if res == QMessageBox.No:
             return True
         return False
 
+    def can_reuse_editor(self, editor):
+        if not editor:
+            return False
+        if editor.file_path:
+            return False
+        if editor.document().isModified():
+            return False
+        return not editor.toPlainText()
+
+    def find_open_editor_by_path(self, path):
+        target = str(Path(path))
+        for i in range(self.editor_tabs.count()):
+            editor = self.editor_tabs.widget(i)
+            if isinstance(editor, CodeEditor) and editor.file_path and str(Path(editor.file_path)) == target:
+                return i, editor
+        return -1, None
+
     def file_new(self):
-        if not self.maybe_save():
-            return
-        self.editor.clear()
-        self.editor.document().setModified(False)
-        self.current_file = None
-        self.update_title()
+        self.create_editor_tab(make_current=True)
 
     def file_open(self):
-        if not self.maybe_save():
-            return
         path, _ = QFileDialog.getOpenFileName(self, "Открыть файл", "", "Текстовые файлы (*.txt);;Все файлы (*)")
         if not path:
             return
-        self.load_file(path)
+        self.open_path(path)
 
-    def file_save(self):
-        if not self.current_file:
-            return self.file_save_as()
+    def open_path(self, path):
+        index, editor = self.find_open_editor_by_path(path)
+        if editor:
+            self.editor_tabs.setCurrentIndex(index)
+            self.statusBar().showMessage(f"Файл уже открыт: {path}", 2000)
+            return True
+
+        editor = self.current_editor()
+        if not self.can_reuse_editor(editor):
+            editor = self.create_editor_tab(make_current=True)
+        return self.load_file(editor, path)
+
+    def file_save(self, editor=None):
+        editor = editor or self.current_editor()
+        if not editor:
+            return False
+        if not editor.file_path:
+            return self.file_save_as(editor=editor)
         try:
-            with open(self.current_file, "w", encoding="utf-8") as f:
-                f.write(self.editor.toPlainText())
+            with open(editor.file_path, "w", encoding="utf-8") as f:
+                f.write(editor.toPlainText())
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{e}")
             return False
-        self.editor.document().setModified(False)
-        self.update_title()
+        editor.document().setModified(False)
+        self.on_editor_modified(editor)
+        if editor is self.current_editor():
+            self.statusBar().showMessage(f"Сохранен файл: {editor.file_path}", 2000)
         return True
 
-    def file_save_as(self):
+    def file_save_as(self, editor=None):
+        editor = editor or self.current_editor()
+        if not editor:
+            return False
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить как", "", "Текстовые файлы (*.txt);;Все файлы (*)")
         if not path:
             return False
-        self.current_file = path
-        return self.file_save()
+        editor.file_path = path
+        return self.file_save(editor=editor)
 
-    def load_file(self, path):
+    def load_file(self, editor, path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = f.read()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл:\n{e}")
             return False
-        self.editor.setPlainText(data)
-        self.editor.document().setModified(False)
-        self.current_file = path
-        self.update_title()
-        self.statusBar().showMessage(f"Открыт файл: {path}", 2000)
+        editor.setPlainText(data)
+        editor.document().setModified(False)
+        editor.file_path = path
+        self.on_editor_modified(editor)
+        if editor is self.current_editor():
+            self.statusBar().showMessage(f"Открыт файл: {path}", 2000)
         return True
 
+    def edit_undo(self):
+        editor = self.current_editor()
+        if editor:
+            editor.undo()
+
+    def edit_redo(self):
+        editor = self.current_editor()
+        if editor:
+            editor.redo()
+
+    def edit_cut(self):
+        editor = self.current_editor()
+        if editor:
+            editor.cut()
+
+    def edit_copy(self):
+        editor = self.current_editor()
+        if editor:
+            editor.copy()
+
+    def edit_paste(self):
+        editor = self.current_editor()
+        if editor:
+            editor.paste()
+
+    def edit_select_all(self):
+        editor = self.current_editor()
+        if editor:
+            editor.selectAll()
+
     def edit_delete(self):
-        cursor = self.editor.textCursor()
+        editor = self.current_editor()
+        if not editor:
+            return
+        cursor = editor.textCursor()
         if cursor.hasSelection():
             cursor.removeSelectedText()
         else:
@@ -401,6 +637,20 @@ class MainWindow(QMainWindow):
         font.setPointSize(size)
         widget.setFont(font)
         self.statusBar().showMessage(f"Размер шрифта: {size}", 1500)
+        return size
+
+    def change_editor_font_size(self, delta):
+        editor = self.current_editor()
+        if not editor:
+            return
+        new_size = self.change_font_size(editor, delta)
+        for i in range(self.editor_tabs.count()):
+            other = self.editor_tabs.widget(i)
+            if other is editor or not isinstance(other, CodeEditor):
+                continue
+            font = QFont(other.font())
+            font.setPointSize(new_size)
+            other.setFont(font)
 
     def show_text_topic(self, title):
         dialog = TextInfoDialog(title, self.text_topics.get(title, ""), self)
@@ -417,7 +667,10 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def run_analysis(self):
-        text = self.editor.toPlainText()
+        editor = self.current_editor()
+        if not editor:
+            return
+        text = editor.toPlainText()
         if not text.strip():
             self.output.setPlainText("Пустой текст. Нечего анализировать.")
             self.statusBar().showMessage("Пуск: пустой текст", 2000)
@@ -506,17 +759,37 @@ class MainWindow(QMainWindow):
     def show_about(self):
         QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 1.")
 
+    def update_cursor_status(self):
+        editor = self.current_editor()
+        if not editor:
+            return
+        cursor = editor.textCursor()
+        line = cursor.blockNumber() + 1
+        col = cursor.positionInBlock() + 1
+        name = editor.file_path or f"Безымянный {editor.untitled_id}"
+        self.statusBar().showMessage(f"{name} | Строка {line}, столбец {col}")
+
     def update_title(self):
-        name = self.current_file if self.current_file else "Безымянный"
-        mod = "*" if self.editor.document().isModified() else ""
+        editor = self.current_editor()
+        if not editor:
+            self.setWindowTitle("Редактор")
+            return
+        if editor.file_path:
+            name = editor.file_path
+        else:
+            name = f"Безымянный {editor.untitled_id}"
+        mod = "*" if editor.document().isModified() else ""
         self.setWindowTitle(f"Редактор {name}{mod}")
-        self.statusBar().showMessage(name)
+        self.update_cursor_status()
 
     def closeEvent(self, event):
-        if self.maybe_save():
-            event.accept()
-        else:
-            event.ignore()
+        for i in range(self.editor_tabs.count()):
+            self.editor_tabs.setCurrentIndex(i)
+            editor = self.editor_tabs.widget(i)
+            if isinstance(editor, CodeEditor) and not self.maybe_save(editor):
+                event.ignore()
+                return
+        event.accept()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -531,11 +804,11 @@ class MainWindow(QMainWindow):
         if not urls:
             event.ignore()
             return
-        if not self.maybe_save():
-            event.ignore()
-            return
-        path = urls[0].toLocalFile()
-        if self.load_file(path):
+        opened = False
+        for url in urls:
+            if self.open_path(url.toLocalFile()):
+                opened = True
+        if opened:
             event.acceptProposedAction()
         else:
             event.ignore()
