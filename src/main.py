@@ -293,8 +293,6 @@ class MainWindow(QMainWindow):
         toolbar_text.addAction(self.act_output_font_inc)
         toolbar_text.addAction(self.act_output_font_dec)
         toolbar_text.addSeparator()
-        toolbar_text.addAction(self.act_run)
-        toolbar_text.addSeparator()
         toolbar_text.addAction(self.act_help)
         toolbar_text.addAction(self.act_about)
 
