@@ -1,7 +1,7 @@
 import sys
 import re
-from PySide6.QtCore import Qt, QRegularExpression
-from PySide6.QtGui import QAction, QKeySequence, QFont, QSyntaxHighlighter, QTextCharFormat, QColor
+from PySide6.QtCore import Qt, QRegularExpression, QSize
+from PySide6.QtGui import QAction, QKeySequence, QFont, QSyntaxHighlighter, QTextCharFormat, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -137,9 +137,28 @@ class MainWindow(QMainWindow):
     def init_actions(self):
         style = self.style()
 
-        self.act_new = QAction(style.standardIcon(QStyle.SP_FileIcon), "Новый", self)
-        self.act_open = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Открыть...", self)
-        self.act_save = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Сохранить", self)
+        def pick_icon(theme_names, fallback):
+            for name in theme_names:
+                icon = QIcon.fromTheme(name)
+                if not icon.isNull():
+                    return icon
+            return fallback
+
+        self.act_new = QAction(
+            pick_icon(["document-new"], style.standardIcon(QStyle.SP_FileIcon)),
+            "Новый",
+            self,
+        )
+        self.act_open = QAction(
+            pick_icon(["document-open", "folder-open"], style.standardIcon(QStyle.SP_DialogOpenButton)),
+            "Открыть...",
+            self,
+        )
+        self.act_save = QAction(
+            pick_icon(["document-save"], style.standardIcon(QStyle.SP_DialogSaveButton)),
+            "Сохранить",
+            self,
+        )
         self.act_save_as = QAction("Сохранить как...", self)
         self.act_exit = QAction("Выход", self)
 
@@ -153,7 +172,11 @@ class MainWindow(QMainWindow):
 
         self.act_help = QAction("Справка", self)
         self.act_about = QAction("О программе", self)
-        self.act_run = QAction(style.standardIcon(QStyle.SP_MediaPlay), "Пуск", self)
+        self.act_run = QAction(
+            pick_icon(["media-playback-start", "system-run"], style.standardIcon(QStyle.SP_MediaPlay)),
+            "Пуск",
+            self,
+        )
         self.act_text_task = QAction("Постановка задачи", self)
         self.act_text_grammar = QAction("Грамматика", self)
         self.act_text_classification = QAction("Классификация грамматики", self)
@@ -262,6 +285,7 @@ class MainWindow(QMainWindow):
         toolbar_icons = QToolBar("Быстрые команды")
         toolbar_icons.setMovable(True)
         toolbar_icons.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        toolbar_icons.setIconSize(QSize(24, 24))
         self.addToolBar(toolbar_icons)
 
         toolbar_icons.addAction(self.act_new)
