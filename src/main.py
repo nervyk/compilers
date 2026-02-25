@@ -14,14 +14,18 @@ from PySide6.QtGui import (
     QTextFormat,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QDialog,
     QFileDialog,
+    QHeaderView,
     QMainWindow,
     QMessageBox,
     QTextEdit,
     QPlainTextEdit,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QToolBar,
     QStyle,
     QVBoxLayout,
@@ -213,13 +217,25 @@ class MainWindow(QMainWindow):
         self.editor_tabs.tabCloseRequested.connect(self.close_editor_tab)
         self.editor_tabs.currentChanged.connect(self.on_editor_tab_changed)
 
-        self.output = QTextEdit()
-        self.output.setReadOnly(True)
-        self.output.setPlaceholderText("Результаты анализа будут отображаться здесь")
+        self.output_tabs = QTabWidget()
+        self.output_text = QTextEdit()
+        self.output_text.setReadOnly(True)
+        self.output_text.setPlaceholderText("Результаты анализа будут отображаться здесь")
+        self.output_errors = QTableWidget(0, 3)
+        self.output_errors.setHorizontalHeaderLabels(["Строка", "Столбец", "Сообщение"])
+        self.output_errors.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.output_errors.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.output_errors.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.output_errors.verticalHeader().setVisible(False)
+        self.output_errors.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.output_errors.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.output_errors.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.output_tabs.addTab(self.output_text, "Результат")
+        self.output_tabs.addTab(self.output_errors, "Ошибки")
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.editor_tabs)
-        splitter.addWidget(self.output)
+        splitter.addWidget(self.output_tabs)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
         self.setCentralWidget(splitter)
@@ -334,8 +350,8 @@ class MainWindow(QMainWindow):
         self.act_text_source.triggered.connect(self.show_source_code)
         self.act_editor_font_inc.triggered.connect(lambda: self.change_editor_font_size(1))
         self.act_editor_font_dec.triggered.connect(lambda: self.change_editor_font_size(-1))
-        self.act_output_font_inc.triggered.connect(lambda: self.change_font_size(self.output, 1))
-        self.act_output_font_dec.triggered.connect(lambda: self.change_font_size(self.output, -1))
+        self.act_output_font_inc.triggered.connect(lambda: self.change_output_font_size(1))
+        self.act_output_font_dec.triggered.connect(lambda: self.change_output_font_size(-1))
 
     def init_menu(self):
         self.menu_file = self.menuBar().addMenu("Файл")
@@ -652,6 +668,13 @@ class MainWindow(QMainWindow):
             font.setPointSize(new_size)
             other.setFont(font)
 
+    def change_output_font_size(self, delta):
+        new_size = self.change_font_size(self.output_text, delta)
+        font = QFont(self.output_errors.font())
+        font.setPointSize(new_size)
+        self.output_errors.setFont(font)
+        self.output_errors.horizontalHeader().setFont(font)
+
     def show_text_topic(self, title):
         dialog = TextInfoDialog(title, self.text_topics.get(title, ""), self)
         dialog.exec()
@@ -672,7 +695,9 @@ class MainWindow(QMainWindow):
             return
         text = editor.toPlainText()
         if not text.strip():
-            self.output.setPlainText("Пустой текст. Нечего анализировать.")
+            self.output_text.setPlainText("Пустой текст. Нечего анализировать.")
+            self.fill_errors_table([])
+            self.output_tabs.setCurrentWidget(self.output_text)
             self.statusBar().showMessage("Пуск: пустой текст", 2000)
             return
 
@@ -743,8 +768,21 @@ class MainWindow(QMainWindow):
         else:
             result_lines.append("Ошибок не найдено.")
 
-        self.output.setPlainText("\n".join(result_lines))
+        self.output_text.setPlainText("\n".join(result_lines))
+        self.fill_errors_table(errors)
+        if errors:
+            self.output_tabs.setCurrentWidget(self.output_errors)
+        else:
+            self.output_tabs.setCurrentWidget(self.output_text)
         self.statusBar().showMessage("Анализ завершен", 2000)
+
+    def fill_errors_table(self, errors):
+        self.output_errors.setRowCount(0)
+        for row, (line_no, col_no, msg) in enumerate(errors):
+            self.output_errors.insertRow(row)
+            self.output_errors.setItem(row, 0, QTableWidgetItem(str(line_no)))
+            self.output_errors.setItem(row, 1, QTableWidgetItem(str(col_no)))
+            self.output_errors.setItem(row, 2, QTableWidgetItem(msg))
 
     def show_help(self):
         text = (
