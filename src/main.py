@@ -4,6 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QRegularExpression, QSize, QRect
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QKeySequence,
     QFont,
     QSyntaxHighlighter,
@@ -171,6 +172,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
+        self.lang = "ru"
         self.untitled_counter = 1
         self.text_topics = {
             "Постановка задачи": (
@@ -245,6 +247,7 @@ class MainWindow(QMainWindow):
         self.init_toolbars()
 
         self.create_editor_tab(make_current=True)
+        self.apply_language()
         self.statusBar().showMessage("Готово")
         self.update_title()
         self.resize(900, 600)
@@ -299,6 +302,14 @@ class MainWindow(QMainWindow):
         self.act_text_example = QAction("Тестовый пример", self)
         self.act_text_literature = QAction("Список литературы", self)
         self.act_text_source = QAction("Исходный код программы", self)
+        self.act_lang_ru = QAction("Русский", self)
+        self.act_lang_en = QAction("English", self)
+        self.act_lang_ru.setCheckable(True)
+        self.act_lang_en.setCheckable(True)
+        self.lang_group = QActionGroup(self)
+        self.lang_group.setExclusive(True)
+        self.lang_group.addAction(self.act_lang_ru)
+        self.lang_group.addAction(self.act_lang_en)
 
         self.act_editor_font_inc = QAction("Шрифт редактора +", self)
         self.act_editor_font_dec = QAction("Шрифт редактора -", self)
@@ -348,6 +359,8 @@ class MainWindow(QMainWindow):
         self.act_text_example.triggered.connect(lambda: self.show_text_topic("Тестовый пример"))
         self.act_text_literature.triggered.connect(lambda: self.show_text_topic("Список литературы"))
         self.act_text_source.triggered.connect(self.show_source_code)
+        self.act_lang_ru.triggered.connect(lambda: self.set_language("ru"))
+        self.act_lang_en.triggered.connect(lambda: self.set_language("en"))
         self.act_editor_font_inc.triggered.connect(lambda: self.change_editor_font_size(1))
         self.act_editor_font_dec.triggered.connect(lambda: self.change_editor_font_size(-1))
         self.act_output_font_inc.triggered.connect(lambda: self.change_output_font_size(1))
@@ -388,6 +401,10 @@ class MainWindow(QMainWindow):
         self.menu_help = self.menuBar().addMenu("Справка")
         self.menu_help.addAction(self.act_help)
         self.menu_help.addAction(self.act_about)
+
+        self.menu_lang = self.menuBar().addMenu("Язык")
+        self.menu_lang.addAction(self.act_lang_ru)
+        self.menu_lang.addAction(self.act_lang_en)
 
         self.menu_view = self.menuBar().addMenu("Вид")
         self.menu_view.addAction(self.act_editor_font_inc)
@@ -469,7 +486,7 @@ class MainWindow(QMainWindow):
         if editor.file_path:
             name = Path(editor.file_path).name
         else:
-            name = f"Безымянный {editor.untitled_id}"
+            name = f"{self.untitled_word()} {editor.untitled_id}"
         if editor.document().isModified():
             name += "*"
         return name
@@ -512,8 +529,12 @@ class MainWindow(QMainWindow):
             return True
         name = editor.file_path or f"Безымянный {editor.untitled_id}"
         msg = QMessageBox(self)
-        msg.setWindowTitle("Несохраненные изменения")
-        msg.setText(f"Сохранить изменения в файле '{name}'?")
+        if self.lang == "en":
+            msg.setWindowTitle("Unsaved Changes")
+            msg.setText(f"Save changes to '{name}'?")
+        else:
+            msg.setWindowTitle("Несохраненные изменения")
+            msg.setText(f"Сохранить изменения в файле '{name}'?")
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
         msg.setDefaultButton(QMessageBox.Yes)
         res = msg.exec()
@@ -676,7 +697,9 @@ class MainWindow(QMainWindow):
         self.output_errors.horizontalHeader().setFont(font)
 
     def show_text_topic(self, title):
-        dialog = TextInfoDialog(title, self.text_topics.get(title, ""), self)
+        sender = self.sender()
+        dialog_title = sender.text() if isinstance(sender, QAction) else title
+        dialog = TextInfoDialog(dialog_title, self.text_topics.get(title, ""), self)
         dialog.exec()
 
     def show_source_code(self):
@@ -686,7 +709,8 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть исходный код:\n{e}")
             return
-        dialog = TextInfoDialog("Исходный код программы", text, self)
+        dialog_title = "Program Source Code" if self.lang == "en" else "Исходный код программы"
+        dialog = TextInfoDialog(dialog_title, text, self)
         dialog.exec()
 
     def run_analysis(self):
@@ -785,6 +809,16 @@ class MainWindow(QMainWindow):
             self.output_errors.setItem(row, 2, QTableWidgetItem(msg))
 
     def show_help(self):
+        if self.lang == "en":
+            text = (
+                "File: new, open, save, save as, exit.\n"
+                "Edit: undo/redo, cut/copy/paste, delete, select all.\n"
+                "Text: study materials and program source code.\n"
+                "Run: basic text analysis (F5), output goes to the lower area.\n"
+                "Help: function description and about dialog."
+            )
+            QMessageBox.information(self, "Help", text)
+            return
         text = (
             "Файл: создать, открыть, сохранить, сохранить как, выход.\n"
             "Правка: отмена/повтор, вырезать/копировать/вставить, удалить, выделить все.\n"
@@ -795,6 +829,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Справка", text)
 
     def show_about(self):
+        if self.lang == "en":
+            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 1.")
+            return
         QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 1.")
 
     def update_cursor_status(self):
@@ -804,20 +841,24 @@ class MainWindow(QMainWindow):
         cursor = editor.textCursor()
         line = cursor.blockNumber() + 1
         col = cursor.positionInBlock() + 1
-        name = editor.file_path or f"Безымянный {editor.untitled_id}"
-        self.statusBar().showMessage(f"{name} | Строка {line}, столбец {col}")
+        name = editor.file_path or f"{self.untitled_word()} {editor.untitled_id}"
+        if self.lang == "en":
+            self.statusBar().showMessage(f"{name} | Line {line}, column {col}")
+        else:
+            self.statusBar().showMessage(f"{name} | Строка {line}, столбец {col}")
 
     def update_title(self):
         editor = self.current_editor()
         if not editor:
-            self.setWindowTitle("Редактор")
+            self.setWindowTitle("Editor" if self.lang == "en" else "Редактор")
             return
         if editor.file_path:
             name = editor.file_path
         else:
-            name = f"Безымянный {editor.untitled_id}"
+            name = f"{self.untitled_word()} {editor.untitled_id}"
         mod = "*" if editor.document().isModified() else ""
-        self.setWindowTitle(f"Редактор {name}{mod}")
+        title = "Editor" if self.lang == "en" else "Редактор"
+        self.setWindowTitle(f"{title} {name}{mod}")
         self.update_cursor_status()
 
     def closeEvent(self, event):
@@ -850,6 +891,153 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def untitled_word(self):
+        return "Untitled" if self.lang == "en" else "Безымянный"
+
+    def set_language(self, lang):
+        if lang not in {"ru", "en"}:
+            return
+        if self.lang == lang:
+            return
+        self.lang = lang
+        self.apply_language()
+
+    def apply_language(self):
+        ru = {
+            "menu_file": "Файл",
+            "menu_edit": "Правка",
+            "menu_text": "Текст",
+            "menu_help": "Справка",
+            "menu_lang": "Язык",
+            "menu_view": "Вид",
+            "tb_quick": "Быстрые команды",
+            "tb_tools": "Инструменты",
+            "new": "Новый",
+            "open": "Открыть...",
+            "save": "Сохранить",
+            "save_as": "Сохранить как...",
+            "exit": "Выход",
+            "undo": "Отменить",
+            "redo": "Повторить",
+            "cut": "Вырезать",
+            "copy": "Копировать",
+            "paste": "Вставить",
+            "delete": "Удалить",
+            "select_all": "Выделить все",
+            "help": "Справка",
+            "about": "О программе",
+            "run": "Пуск",
+            "editor_font_inc": "Шрифт редактора +",
+            "editor_font_dec": "Шрифт редактора -",
+            "output_font_inc": "Шрифт вывода +",
+            "output_font_dec": "Шрифт вывода -",
+            "topic_task": "Постановка задачи",
+            "topic_grammar": "Грамматика",
+            "topic_classification": "Классификация грамматики",
+            "topic_method": "Метод анализа",
+            "topic_example": "Тестовый пример",
+            "topic_literature": "Список литературы",
+            "topic_source": "Исходный код программы",
+            "output_result": "Результат",
+            "output_errors": "Ошибки",
+            "output_placeholder": "Результаты анализа будут отображаться здесь",
+            "error_col_line": "Строка",
+            "error_col_col": "Столбец",
+            "error_col_msg": "Сообщение",
+        }
+        en = {
+            "menu_file": "File",
+            "menu_edit": "Edit",
+            "menu_text": "Text",
+            "menu_help": "Help",
+            "menu_lang": "Language",
+            "menu_view": "View",
+            "tb_quick": "Quick Actions",
+            "tb_tools": "Tools",
+            "new": "New",
+            "open": "Open...",
+            "save": "Save",
+            "save_as": "Save As...",
+            "exit": "Exit",
+            "undo": "Undo",
+            "redo": "Redo",
+            "cut": "Cut",
+            "copy": "Copy",
+            "paste": "Paste",
+            "delete": "Delete",
+            "select_all": "Select All",
+            "help": "Help",
+            "about": "About",
+            "run": "Run",
+            "editor_font_inc": "Editor Font +",
+            "editor_font_dec": "Editor Font -",
+            "output_font_inc": "Output Font +",
+            "output_font_dec": "Output Font -",
+            "topic_task": "Problem Statement",
+            "topic_grammar": "Grammar",
+            "topic_classification": "Grammar Classification",
+            "topic_method": "Analysis Method",
+            "topic_example": "Test Example",
+            "topic_literature": "Literature",
+            "topic_source": "Program Source Code",
+            "output_result": "Result",
+            "output_errors": "Errors",
+            "output_placeholder": "Analysis results will be shown here",
+            "error_col_line": "Line",
+            "error_col_col": "Column",
+            "error_col_msg": "Message",
+        }
+        t = ru if self.lang == "ru" else en
+
+        self.menu_file.setTitle(t["menu_file"])
+        self.menu_edit.setTitle(t["menu_edit"])
+        self.menu_text.setTitle(t["menu_text"])
+        self.menu_help.setTitle(t["menu_help"])
+        self.menu_lang.setTitle(t["menu_lang"])
+        self.menu_view.setTitle(t["menu_view"])
+
+        self.toolbar_icons.setWindowTitle(t["tb_quick"])
+        self.toolbar_text.setWindowTitle(t["tb_tools"])
+
+        self.act_new.setText(t["new"])
+        self.act_open.setText(t["open"])
+        self.act_save.setText(t["save"])
+        self.act_save_as.setText(t["save_as"])
+        self.act_exit.setText(t["exit"])
+        self.act_undo.setText(t["undo"])
+        self.act_redo.setText(t["redo"])
+        self.act_cut.setText(t["cut"])
+        self.act_copy.setText(t["copy"])
+        self.act_paste.setText(t["paste"])
+        self.act_delete.setText(t["delete"])
+        self.act_select_all.setText(t["select_all"])
+        self.act_help.setText(t["help"])
+        self.act_about.setText(t["about"])
+        self.act_run.setText(t["run"])
+        self.act_editor_font_inc.setText(t["editor_font_inc"])
+        self.act_editor_font_dec.setText(t["editor_font_dec"])
+        self.act_output_font_inc.setText(t["output_font_inc"])
+        self.act_output_font_dec.setText(t["output_font_dec"])
+        self.act_text_task.setText(t["topic_task"])
+        self.act_text_grammar.setText(t["topic_grammar"])
+        self.act_text_classification.setText(t["topic_classification"])
+        self.act_text_method.setText(t["topic_method"])
+        self.act_text_example.setText(t["topic_example"])
+        self.act_text_literature.setText(t["topic_literature"])
+        self.act_text_source.setText(t["topic_source"])
+
+        self.act_lang_ru.setChecked(self.lang == "ru")
+        self.act_lang_en.setChecked(self.lang == "en")
+
+        self.output_tabs.setTabText(0, t["output_result"])
+        self.output_tabs.setTabText(1, t["output_errors"])
+        self.output_text.setPlaceholderText(t["output_placeholder"])
+        self.output_errors.setHorizontalHeaderLabels([t["error_col_line"], t["error_col_col"], t["error_col_msg"]])
+
+        for i in range(self.editor_tabs.count()):
+            self.update_editor_tab(i)
+        self.update_title()
 
 
 def main():
