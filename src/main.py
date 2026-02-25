@@ -1,4 +1,5 @@
 import sys
+import re
 from PySide6.QtCore import Qt, QRegularExpression
 from PySide6.QtGui import QAction, QKeySequence, QFont, QSyntaxHighlighter, QTextCharFormat, QColor
 from PySide6.QtWidgets import (
@@ -152,6 +153,7 @@ class MainWindow(QMainWindow):
 
         self.act_help = QAction("Справка", self)
         self.act_about = QAction("О программе", self)
+        self.act_run = QAction(style.standardIcon(QStyle.SP_MediaPlay), "Пуск", self)
         self.act_text_task = QAction("Постановка задачи", self)
         self.act_text_grammar = QAction("Грамматика", self)
         self.act_text_classification = QAction("Классификация грамматики", self)
@@ -178,6 +180,7 @@ class MainWindow(QMainWindow):
         self.act_paste.setShortcut(QKeySequence.Paste)
         self.act_delete.setShortcut(QKeySequence.Delete)
         self.act_select_all.setShortcut(QKeySequence.SelectAll)
+        self.act_run.setShortcut(QKeySequence("F5"))
         self.act_editor_font_inc.setShortcut(QKeySequence("Ctrl+="))
         self.act_editor_font_dec.setShortcut(QKeySequence("Ctrl+-"))
         self.act_output_font_inc.setShortcut(QKeySequence("Ctrl+Shift+="))
@@ -199,6 +202,7 @@ class MainWindow(QMainWindow):
 
         self.act_help.triggered.connect(self.show_help)
         self.act_about.triggered.connect(self.show_about)
+        self.act_run.triggered.connect(self.run_analysis)
         self.act_text_task.triggered.connect(lambda: self.show_text_topic("Постановка задачи"))
         self.act_text_grammar.triggered.connect(lambda: self.show_text_topic("Грамматика"))
         self.act_text_classification.triggered.connect(lambda: self.show_text_topic("Классификация грамматики"))
@@ -241,6 +245,8 @@ class MainWindow(QMainWindow):
         menu_text.addSeparator()
         menu_text.addAction(self.act_text_source)
 
+        self.menuBar().addAction(self.act_run)
+
         menu_help = self.menuBar().addMenu("Справка")
         menu_help.addAction(self.act_help)
         menu_help.addAction(self.act_about)
@@ -261,6 +267,7 @@ class MainWindow(QMainWindow):
         toolbar_icons.addAction(self.act_new)
         toolbar_icons.addAction(self.act_open)
         toolbar_icons.addAction(self.act_save)
+        toolbar_icons.addAction(self.act_run)
 
         self.addToolBarBreak()
 
@@ -285,6 +292,8 @@ class MainWindow(QMainWindow):
         toolbar_text.addAction(self.act_editor_font_dec)
         toolbar_text.addAction(self.act_output_font_inc)
         toolbar_text.addAction(self.act_output_font_dec)
+        toolbar_text.addSeparator()
+        toolbar_text.addAction(self.act_run)
         toolbar_text.addSeparator()
         toolbar_text.addAction(self.act_help)
         toolbar_text.addAction(self.act_about)
@@ -385,11 +394,89 @@ class MainWindow(QMainWindow):
         dialog = TextInfoDialog("Исходный код программы", text, self)
         dialog.exec()
 
+    def run_analysis(self):
+        text = self.editor.toPlainText()
+        if not text.strip():
+            self.output.setPlainText("Пустой текст. Нечего анализировать.")
+            self.statusBar().showMessage("Пуск: пустой текст", 2000)
+            return
+
+        lines = text.splitlines()
+        if not lines:
+            lines = [text]
+
+        errors = []
+        stack = []
+        pairs = {")": "(", "]": "[", "}": "{"}
+        opens = set(pairs.values())
+        keyword_set = {
+            "if", "else", "for", "while", "return", "break", "continue", "def", "class",
+            "import", "from", "try", "except", "finally", "with", "as", "pass",
+            "int", "float", "char", "double", "void", "struct", "const", "static",
+            "public", "private", "protected", "switch", "case", "default",
+        }
+
+        for line_no, line in enumerate(lines, start=1):
+            for col_no, ch in enumerate(line, start=1):
+                if ch in opens:
+                    stack.append((ch, line_no, col_no))
+                elif ch in pairs:
+                    if not stack or stack[-1][0] != pairs[ch]:
+                        errors.append((line_no, col_no, f"Несогласованная скобка '{ch}'"))
+                    else:
+                        stack.pop()
+                elif ch == "@":
+                    errors.append((line_no, col_no, "Недопустимый символ '@'"))
+
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#") or stripped.startswith("//"):
+                continue
+            if stripped.endswith((";", "{", "}", ":")):
+                continue
+            if re.match(r"^(if|for|while|switch)\s*\(.*\)$", stripped):
+                continue
+            if stripped in {"else", "do"}:
+                continue
+            if stripped.startswith("else "):
+                continue
+            if "=" in stripped or re.search(r"\b(return|break|continue)\b", stripped):
+                errors.append((line_no, max(len(line), 1), "Возможен пропуск ';'"))
+
+        for ch, line_no, col_no in reversed(stack):
+            errors.append((line_no, col_no, f"Нет закрывающей скобки для '{ch}'"))
+
+        words = re.findall(r"[A-Za-z_][A-Za-z_0-9]*", text)
+        numbers = re.findall(r"\b\d+(\.\d+)?\b", text)
+        keywords_found = sum(1 for w in words if w in keyword_set)
+
+        result_lines = [
+            "Результаты анализа",
+            f"Строк: {len(lines)}",
+            f"Символов: {len(text)}",
+            f"Идентификаторов/слов: {len(words)}",
+            f"Чисел: {len(numbers)}",
+            f"Ключевых слов: {keywords_found}",
+            "",
+        ]
+
+        if errors:
+            result_lines.append("Ошибки:")
+            for line_no, col_no, msg in errors:
+                result_lines.append(f"L{line_no}:C{col_no} {msg}")
+        else:
+            result_lines.append("Ошибок не найдено.")
+
+        self.output.setPlainText("\n".join(result_lines))
+        self.statusBar().showMessage("Анализ завершен", 2000)
+
     def show_help(self):
         text = (
             "Файл: создать, открыть, сохранить, сохранить как, выход.\n"
             "Правка: отмена/повтор, вырезать/копировать/вставить, удалить, выделить все.\n"
             "Текст: учебные материалы и исходный код программы.\n"
+            "Пуск: базовый анализ текста (F5), вывод результата в нижнюю область.\n"
             "Справка: описание функций и окно о программе."
         )
         QMessageBox.information(self, "Справка", text)
