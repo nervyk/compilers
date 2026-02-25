@@ -17,6 +17,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_file = None
+        self.setAcceptDrops(True)
 
         self.editor = QTextEdit()
         self.output = QTextEdit()
@@ -188,16 +189,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Открыть файл", "", "Текстовые файлы (*.txt);;Все файлы (*)")
         if not path:
             return
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = f.read()
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл:\n{e}")
-            return
-        self.editor.setPlainText(data)
-        self.editor.document().setModified(False)
-        self.current_file = path
-        self.update_title()
+        self.load_file(path)
 
     def file_save(self):
         if not self.current_file:
@@ -218,6 +210,20 @@ class MainWindow(QMainWindow):
             return False
         self.current_file = path
         return self.file_save()
+
+    def load_file(self, path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = f.read()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл:\n{e}")
+            return False
+        self.editor.setPlainText(data)
+        self.editor.document().setModified(False)
+        self.current_file = path
+        self.update_title()
+        self.statusBar().showMessage(f"Открыт файл: {path}", 2000)
+        return True
 
     def edit_delete(self):
         cursor = self.editor.textCursor()
@@ -256,6 +262,28 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self.maybe_save():
             event.accept()
+        else:
+            event.ignore()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        urls = [url for url in event.mimeData().urls() if url.isLocalFile()]
+        if not urls:
+            event.ignore()
+            return
+        if not self.maybe_save():
+            event.ignore()
+            return
+        path = urls[0].toLocalFile()
+        if self.load_file(path):
+            event.acceptProposedAction()
         else:
             event.ignore()
 
