@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+  <rect width="900" height="520" fill="#f4f4f4" />
+  <rect x="20" y="20" width="860" height="40" fill="#d9d9d9" />
+  <rect x="20" y="70" width="860" height="36" fill="#e6e6e6" />
+  <rect x="20" y="120" width="860" height="250" fill="#ffffff" stroke="#c0c0c0" />
+  <rect x="20" y="380" width="860" height="120" fill="#ffffff" stroke="#c0c0c0" />
+  <text x="30" y="45" font-family="Arial" font-size="16">Меню</text>
+  <text x="30" y="94" font-family="Arial" font-size="14">Панель инструментов</text>
+  <text x="30" y="145" font-family="Arial" font-size="14">Область редактирования</text>
+  <text x="30" y="405" font-family="Arial" font-size="14">Результат работы процессора</text>
+</svg>
