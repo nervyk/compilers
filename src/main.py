@@ -121,7 +121,8 @@ class CodeEditor(QPlainTextEdit):
 
     def line_number_area_paint_event(self, event):
         painter = QPainter(self.line_number_area)
-        painter.fillRect(event.rect(), QColor("#f1f3f4"))
+        bg = self.palette().window().color()
+        painter.fillRect(event.rect(), bg)
 
         block = self.firstVisibleBlock()
         block_number = block.blockNumber()
@@ -130,7 +131,12 @@ class CodeEditor(QPlainTextEdit):
 
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
-                painter.setPen(QColor("#5f6368"))
+                pen = self.palette().text().color()
+                if bg.lightness() < 128:
+                    pen = pen.lighter(140)
+                else:
+                    pen = pen.darker(130)
+                painter.setPen(pen)
                 painter.drawText(
                     0,
                     top,
@@ -149,7 +155,12 @@ class CodeEditor(QPlainTextEdit):
             self.setExtraSelections([])
             return
         selection = QTextEdit.ExtraSelection()
-        selection.format.setBackground(QColor("#eef4ff"))
+        base_color = self.palette().base().color()
+        if base_color.lightness() < 128:
+            line_color = base_color.lighter(120)
+        else:
+            line_color = base_color.darker(105)
+        selection.format.setBackground(line_color)
         selection.format.setProperty(QTextFormat.FullWidthSelection, True)
         selection.cursor = self.textCursor()
         selection.cursor.clearSelection()
