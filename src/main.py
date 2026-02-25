@@ -74,7 +74,7 @@ class MainWindow(QMainWindow):
 
         self.init_actions()
         self.init_menu()
-        self.init_toolbar()
+        self.init_toolbars()
 
         self.statusBar().showMessage("Готово")
         self.editor.document().modificationChanged.connect(self.update_title)
@@ -176,29 +176,42 @@ class MainWindow(QMainWindow):
         menu_view.addAction(self.act_output_font_inc)
         menu_view.addAction(self.act_output_font_dec)
 
-    def init_toolbar(self):
-        toolbar = QToolBar("Инструменты")
-        toolbar.setMovable(True)
-        self.addToolBar(toolbar)
+    def init_toolbars(self):
+        toolbar_icons = QToolBar("Быстрые команды")
+        toolbar_icons.setMovable(True)
+        toolbar_icons.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.addToolBar(toolbar_icons)
 
-        toolbar.addAction(self.act_new)
-        toolbar.addAction(self.act_open)
-        toolbar.addAction(self.act_save)
-        toolbar.addAction(self.act_save_as)
-        toolbar.addSeparator()
-        toolbar.addAction(self.act_undo)
-        toolbar.addAction(self.act_redo)
-        toolbar.addSeparator()
-        toolbar.addAction(self.act_cut)
-        toolbar.addAction(self.act_copy)
-        toolbar.addAction(self.act_paste)
-        toolbar.addAction(self.act_delete)
-        toolbar.addAction(self.act_select_all)
-        toolbar.addSeparator()
-        toolbar.addAction(self.act_help)
-        toolbar.addAction(self.act_about)
-        toolbar.addSeparator()
-        toolbar.addAction(self.act_exit)
+        toolbar_icons.addAction(self.act_new)
+        toolbar_icons.addAction(self.act_open)
+        toolbar_icons.addAction(self.act_save)
+
+        self.addToolBarBreak()
+
+        toolbar_text = QToolBar("Инструменты")
+        toolbar_text.setMovable(True)
+        toolbar_text.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.addToolBar(toolbar_text)
+
+        toolbar_text.addAction(self.act_save_as)
+        toolbar_text.addAction(self.act_exit)
+        toolbar_text.addSeparator()
+        toolbar_text.addAction(self.act_undo)
+        toolbar_text.addAction(self.act_redo)
+        toolbar_text.addSeparator()
+        toolbar_text.addAction(self.act_cut)
+        toolbar_text.addAction(self.act_copy)
+        toolbar_text.addAction(self.act_paste)
+        toolbar_text.addAction(self.act_delete)
+        toolbar_text.addAction(self.act_select_all)
+        toolbar_text.addSeparator()
+        toolbar_text.addAction(self.act_editor_font_inc)
+        toolbar_text.addAction(self.act_editor_font_dec)
+        toolbar_text.addAction(self.act_output_font_inc)
+        toolbar_text.addAction(self.act_output_font_dec)
+        toolbar_text.addSeparator()
+        toolbar_text.addAction(self.act_help)
+        toolbar_text.addAction(self.act_about)
 
     def maybe_save(self):
         if not self.editor.document().isModified():
