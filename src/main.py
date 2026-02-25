@@ -1,6 +1,6 @@
 import sys
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -60,6 +60,11 @@ class MainWindow(QMainWindow):
         self.act_help = QAction("Справка", self)
         self.act_about = QAction("О программе", self)
 
+        self.act_editor_font_inc = QAction("Шрифт редактора +", self)
+        self.act_editor_font_dec = QAction("Шрифт редактора -", self)
+        self.act_output_font_inc = QAction("Шрифт вывода +", self)
+        self.act_output_font_dec = QAction("Шрифт вывода -", self)
+
         self.act_new.setShortcut(QKeySequence.New)
         self.act_open.setShortcut(QKeySequence.Open)
         self.act_save.setShortcut(QKeySequence.Save)
@@ -73,6 +78,10 @@ class MainWindow(QMainWindow):
         self.act_paste.setShortcut(QKeySequence.Paste)
         self.act_delete.setShortcut(QKeySequence.Delete)
         self.act_select_all.setShortcut(QKeySequence.SelectAll)
+        self.act_editor_font_inc.setShortcut(QKeySequence("Ctrl+="))
+        self.act_editor_font_dec.setShortcut(QKeySequence("Ctrl+-"))
+        self.act_output_font_inc.setShortcut(QKeySequence("Ctrl+Shift+="))
+        self.act_output_font_dec.setShortcut(QKeySequence("Ctrl+Shift+-"))
 
         self.act_new.triggered.connect(self.file_new)
         self.act_open.triggered.connect(self.file_open)
@@ -90,6 +99,10 @@ class MainWindow(QMainWindow):
 
         self.act_help.triggered.connect(self.show_help)
         self.act_about.triggered.connect(self.show_about)
+        self.act_editor_font_inc.triggered.connect(lambda: self.change_font_size(self.editor, 1))
+        self.act_editor_font_dec.triggered.connect(lambda: self.change_font_size(self.editor, -1))
+        self.act_output_font_inc.triggered.connect(lambda: self.change_font_size(self.output, 1))
+        self.act_output_font_dec.triggered.connect(lambda: self.change_font_size(self.output, -1))
 
     def init_menu(self):
         menu_file = self.menuBar().addMenu("Файл")
@@ -114,6 +127,13 @@ class MainWindow(QMainWindow):
         menu_help = self.menuBar().addMenu("Справка")
         menu_help.addAction(self.act_help)
         menu_help.addAction(self.act_about)
+
+        menu_view = self.menuBar().addMenu("Вид")
+        menu_view.addAction(self.act_editor_font_inc)
+        menu_view.addAction(self.act_editor_font_dec)
+        menu_view.addSeparator()
+        menu_view.addAction(self.act_output_font_inc)
+        menu_view.addAction(self.act_output_font_dec)
 
     def init_toolbar(self):
         toolbar = QToolBar("Инструменты")
@@ -205,6 +225,16 @@ class MainWindow(QMainWindow):
             cursor.removeSelectedText()
         else:
             cursor.deleteChar()
+
+    def change_font_size(self, widget, delta):
+        font = QFont(widget.font())
+        size = font.pointSize()
+        if size <= 0:
+            size = 10
+        size = max(8, min(32, size + delta))
+        font.setPointSize(size)
+        widget.setFont(font)
+        self.statusBar().showMessage(f"Размер шрифта: {size}", 1500)
 
     def show_help(self):
         text = (
