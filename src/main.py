@@ -1,6 +1,6 @@
 import sys
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence, QFont
+from PySide6.QtCore import Qt, QRegularExpression
+from PySide6.QtGui import QAction, QKeySequence, QFont, QSyntaxHighlighter, QTextCharFormat, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -13,6 +13,45 @@ from PySide6.QtWidgets import (
 )
 
 
+class BasicHighlighter(QSyntaxHighlighter):
+    def __init__(self, document):
+        super().__init__(document)
+        self.rules = []
+
+        kw = QTextCharFormat()
+        kw.setForeground(QColor("#0b57d0"))
+        kw.setFontWeight(QFont.Bold)
+        keywords = [
+            "if", "else", "for", "while", "return", "break", "continue", "def", "class",
+            "import", "from", "try", "except", "finally", "with", "as", "pass",
+            "int", "float", "char", "double", "void", "struct", "const", "static",
+            "public", "private", "protected", "switch", "case", "default",
+        ]
+        for word in keywords:
+            self.rules.append((QRegularExpression(rf"\b{word}\b"), kw))
+
+        num = QTextCharFormat()
+        num.setForeground(QColor("#b00020"))
+        self.rules.append((QRegularExpression(r"\b\d+(\.\d+)?\b"), num))
+
+        string_fmt = QTextCharFormat()
+        string_fmt.setForeground(QColor("#137333"))
+        self.rules.append((QRegularExpression(r'"[^"\n]*"'), string_fmt))
+        self.rules.append((QRegularExpression(r"'[^'\n]*'"), string_fmt))
+
+        comment_fmt = QTextCharFormat()
+        comment_fmt.setForeground(QColor("#6a737d"))
+        self.rules.append((QRegularExpression(r"#.*$"), comment_fmt))
+        self.rules.append((QRegularExpression(r"//.*$"), comment_fmt))
+
+    def highlightBlock(self, text):
+        for pattern, text_format in self.rules:
+            it = pattern.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self.setFormat(m.capturedStart(), m.capturedLength(), text_format)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -23,6 +62,7 @@ class MainWindow(QMainWindow):
         self.output = QTextEdit()
         self.output.setReadOnly(True)
         self.output.setPlaceholderText("Результаты анализа будут отображаться здесь")
+        self.highlighter = BasicHighlighter(self.editor.document())
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.editor)
