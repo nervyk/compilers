@@ -41,45 +41,6 @@ identifier = {element1, element2, ...}
 | 15 | разделитель (перенос строки) | `(перенос строки)` | символ `\n` |
 | 99 | ошибка | `@` | недопустимый символ или незавершенная строка |
 
-## Диаграмма состояний
-![Диаграмма состояний](docs/state-diagram-elixir.svg)
-
-```mermaid
-stateDiagram-v2
-    [*] --> START
-
-    START --> WS: пробел / \t / \r
-    WS --> WS: пробел / \t / \r
-    WS --> START: emit WHITESPACE
-
-    START --> NL: \n
-    NL --> START: emit NEWLINE
-
-    START --> IDENT: [a-z_]
-    IDENT --> IDENT: [a-z0-9_]
-    IDENT --> START: emit IDENTIFIER
-
-    START --> INT: [0-9]
-    INT --> INT: [0-9]
-    INT --> START: emit INTEGER
-
-    START --> COLON: :
-    COLON --> ATOM: [a-z_]
-    COLON --> ERROR: иначе
-    ATOM --> ATOM: [a-z0-9_]
-    ATOM --> START: emit ATOM
-
-    START --> STRING: "
-    STRING --> ESC: \\
-    ESC --> STRING: любой символ
-    STRING --> START: '"' / emit STRING
-    STRING --> ERROR: \n или EOF
-
-    START --> START: '=' ',' '{' '}' / emit single-char token
-    START --> ERROR: прочий символ
-    ERROR --> START: emit ERROR
-```
-
 Кратко о работе автомата:
 - В состоянии `START` выбирается тип текущей лексемы по первому символу.
 - Для многосимвольных токенов (`IDENT`, `INT`, `ATOM`, `STRING`, `WS`) автомат остается в состоянии, пока символы соответствуют классу.
