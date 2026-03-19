@@ -1,5 +1,5 @@
 import sys
-import re
+from dataclasses import dataclass
 from pathlib import Path
 from PySide6.QtCore import Qt, QRegularExpression, QSize, QRect
 from PySide6.QtGui import (
@@ -33,6 +33,191 @@ from PySide6.QtWidgets import (
     QWidget,
     QTabWidget,
 )
+
+
+@dataclass
+class Lexeme:
+    code: int
+    token_type: str
+    lexeme: str
+    line: int
+    start_col: int
+    end_col: int
+    is_error: bool = False
+    message: str = ""
+
+
+class LexicalAnalyzer:
+    TOKEN_TYPES = {
+        "INTEGER": (1, "целое без знака"),
+        "IDENTIFIER": (2, "идентификатор"),
+        "ATOM": (3, "атом"),
+        "STRING": (4, "строковый литерал"),
+        "ASSIGN": (10, "оператор присваивания"),
+        "COMMA": (11, "разделитель (запятая)"),
+        "TUPLE_OPEN": (12, "разделитель (открывающая скобка кортежа)"),
+        "TUPLE_CLOSE": (13, "разделитель (закрывающая скобка кортежа)"),
+        "WHITESPACE": (14, "разделитель (пробел/табуляция)"),
+        "NEWLINE": (15, "разделитель (перенос строки)"),
+        "ERROR": (99, "ошибка"),
+    }
+
+    SINGLE_CHAR_TOKENS = {
+        "=": "ASSIGN",
+        ",": "COMMA",
+        "{": "TUPLE_OPEN",
+        "}": "TUPLE_CLOSE",
+    }
+
+    def analyze(self, text):
+        result = []
+        i = 0
+        line = 1
+        col = 1
+        n = len(text)
+
+        while i < n:
+            ch = text[i]
+            start_i = i
+            start_col = col
+
+            if ch == "\n":
+                self._push_token(result, "NEWLINE", "\n", line, col, col)
+                i += 1
+                line += 1
+                col = 1
+                continue
+
+            if ch in " \t\r":
+                while i < n and text[i] in " \t\r":
+                    i += 1
+                    col += 1
+                self._push_token(result, "WHITESPACE", text[start_i:i], line, start_col, col - 1)
+                continue
+
+            if ch.isdigit():
+                while i < n and text[i].isdigit():
+                    i += 1
+                    col += 1
+                self._push_token(result, "INTEGER", text[start_i:i], line, start_col, col - 1)
+                continue
+
+            if self._is_identifier_start(ch):
+                while i < n and self._is_identifier_part(text[i]):
+                    i += 1
+                    col += 1
+                self._push_token(result, "IDENTIFIER", text[start_i:i], line, start_col, col - 1)
+                continue
+
+            if ch == ":":
+                i += 1
+                col += 1
+                if i < n and self._is_identifier_start(text[i]):
+                    atom_start = i
+                    while i < n and self._is_identifier_part(text[i]):
+                        i += 1
+                        col += 1
+                    self._push_token(result, "ATOM", ":" + text[atom_start:i], line, start_col, col - 1)
+                else:
+                    self._push_error(
+                        result,
+                        ":",
+                        line,
+                        start_col,
+                        start_col,
+                        "после ':' ожидается имя атома",
+                    )
+                continue
+
+            if ch == '"':
+                i += 1
+                col += 1
+                escaped = False
+                closed = False
+                while i < n:
+                    curr = text[i]
+                    if curr == "\n":
+                        break
+                    if escaped:
+                        escaped = False
+                        i += 1
+                        col += 1
+                        continue
+                    if curr == "\\":
+                        escaped = True
+                        i += 1
+                        col += 1
+                        continue
+                    if curr == '"':
+                        i += 1
+                        col += 1
+                        closed = True
+                        break
+                    i += 1
+                    col += 1
+
+                if closed:
+                    self._push_token(result, "STRING", text[start_i:i], line, start_col, col - 1)
+                else:
+                    end_col = max(start_col, col - 1)
+                    self._push_error(
+                        result,
+                        text[start_i:i],
+                        line,
+                        start_col,
+                        end_col,
+                        "незакрытый строковый литерал",
+                    )
+                continue
+
+            token_name = self.SINGLE_CHAR_TOKENS.get(ch)
+            if token_name:
+                self._push_token(result, token_name, ch, line, col, col)
+                i += 1
+                col += 1
+                continue
+
+            self._push_error(result, ch, line, col, col, f"недопустимый символ '{ch}'")
+            i += 1
+            col += 1
+
+        return result
+
+    def _push_token(self, collection, token_key, lexeme, line, start_col, end_col):
+        code, token_type = self.TOKEN_TYPES[token_key]
+        collection.append(
+            Lexeme(
+                code=code,
+                token_type=token_type,
+                lexeme=lexeme,
+                line=line,
+                start_col=start_col,
+                end_col=end_col,
+            )
+        )
+
+    def _push_error(self, collection, lexeme, line, start_col, end_col, message):
+        code, token_type = self.TOKEN_TYPES["ERROR"]
+        collection.append(
+            Lexeme(
+                code=code,
+                token_type=token_type,
+                lexeme=lexeme,
+                line=line,
+                start_col=start_col,
+                end_col=end_col,
+                is_error=True,
+                message=message,
+            )
+        )
+
+    @staticmethod
+    def _is_identifier_start(ch):
+        return ch == "_" or ("a" <= ch <= "z")
+
+    @staticmethod
+    def _is_identifier_part(ch):
+        return ch == "_" or ch.isdigit() or ("a" <= ch <= "z")
 
 
 class BasicHighlighter(QSyntaxHighlighter):
@@ -206,16 +391,16 @@ class MainWindow(QMainWindow):
                 "свойств грамматики и ограничений выбранного метода анализа."
             ),
             "Метод анализа": (
-                "На текущем этапе реализован базовый демонстрационный анализ текста.\n\n"
-                "Дальнейшее расширение: лексический и синтаксический анализ входного текста "
-                "с выводом сообщений в нижнюю область результатов."
+                "Реализован лексический анализатор для варианта\n"
+                "'объявление кортежа на языке Elixir'.\n\n"
+                "Сканер выделяет лексемы (идентификаторы, атомы, числа, строки, "
+                "операторы и разделители), определяет их тип и позицию, "
+                "а недопустимые символы помечает как ошибки."
             ),
             "Тестовый пример": (
-                "int a = 10;\n"
-                "float b = 2.5;\n"
-                "if (a > 0) {\n"
-                "    b = b + a;\n"
-                "}\n"
+                "person = {:user, \"Andrey\", 21}\n"
+                "coords = {10, 20, 30}\n"
+                "status = {:ok, 200}\n"
             ),
             "Список литературы": (
                 "1. Ахо А., Сети Р., Ульман Д. Компиляторы: принципы, технологии и инструменты.\n"
@@ -234,17 +419,19 @@ class MainWindow(QMainWindow):
         self.output_text = QTextEdit()
         self.output_text.setReadOnly(True)
         self.output_text.setPlaceholderText("Результаты анализа будут отображаться здесь")
-        self.output_errors = QTableWidget(0, 3)
-        self.output_errors.setHorizontalHeaderLabels(["Строка", "Столбец", "Сообщение"])
-        self.output_errors.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.output_errors.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.output_errors.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.output_errors.verticalHeader().setVisible(False)
-        self.output_errors.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.output_errors.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.output_errors.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.output_table = QTableWidget(0, 4)
+        self.output_table.setHorizontalHeaderLabels(["Код", "Тип лексемы", "Лексема", "Местоположение"])
+        self.output_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.output_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.output_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.output_table.verticalHeader().setVisible(False)
+        self.output_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.output_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.output_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.output_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.output_table.cellClicked.connect(self.handle_result_row_click)
         self.output_tabs.addTab(self.output_text, "Результат")
-        self.output_tabs.addTab(self.output_errors, "Ошибки")
+        self.output_tabs.addTab(self.output_table, "Лексемы")
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.editor_tabs)
@@ -702,10 +889,10 @@ class MainWindow(QMainWindow):
 
     def change_output_font_size(self, delta):
         new_size = self.change_font_size(self.output_text, delta)
-        font = QFont(self.output_errors.font())
+        font = QFont(self.output_table.font())
         font.setPointSize(new_size)
-        self.output_errors.setFont(font)
-        self.output_errors.horizontalHeader().setFont(font)
+        self.output_table.setFont(font)
+        self.output_table.horizontalHeader().setFont(font)
 
     def show_text_topic(self, title):
         sender = self.sender()
@@ -729,95 +916,130 @@ class MainWindow(QMainWindow):
         if not editor:
             return
         text = editor.toPlainText()
-        if not text.strip():
-            self.output_text.setPlainText("Пустой текст. Нечего анализировать.")
-            self.fill_errors_table([])
+        lexemes = LexicalAnalyzer().analyze(text)
+        self.fill_result_table(lexemes)
+
+        error_lexemes = [token for token in lexemes if token.is_error]
+        if self.lang == "en":
+            if text:
+                lines_count = text.count("\n") + 1
+                report = [
+                    "Lexical analysis result (Elixir tuple declaration)",
+                    f"Lines: {lines_count}",
+                    f"Characters: {len(text)}",
+                    f"Lexemes: {len(lexemes)}",
+                    f"Errors: {len(error_lexemes)}",
+                    "",
+                ]
+                if error_lexemes:
+                    report.append("Errors:")
+                    for token in error_lexemes:
+                        report.append(f"L{token.line}:C{token.start_col} {token.message}")
+                else:
+                    report.append("No lexical errors.")
+            else:
+                report = ["Input is empty."]
+        else:
+            if text:
+                lines_count = text.count("\n") + 1
+                report = [
+                    "Результаты лексического анализа (объявление кортежа на Elixir)",
+                    f"Строк: {lines_count}",
+                    f"Символов: {len(text)}",
+                    f"Лексем: {len(lexemes)}",
+                    f"Ошибок: {len(error_lexemes)}",
+                    "",
+                ]
+                if error_lexemes:
+                    report.append("Ошибки:")
+                    for token in error_lexemes:
+                        report.append(f"L{token.line}:C{token.start_col} {token.message}")
+                else:
+                    report.append("Ошибок не найдено.")
+            else:
+                report = ["Пустой текст. Нечего анализировать."]
+
+        self.output_text.setPlainText("\n".join(report))
+        if text:
+            self.output_tabs.setCurrentWidget(self.output_table)
+        else:
             self.output_tabs.setCurrentWidget(self.output_text)
-            self.statusBar().showMessage("Пуск: пустой текст", 2000)
+        status = "Analysis complete" if self.lang == "en" else "Анализ завершен"
+        self.statusBar().showMessage(status, 2000)
+
+    def fill_result_table(self, lexemes):
+        self.output_table.setRowCount(0)
+        for row, token in enumerate(lexemes):
+            self.output_table.insertRow(row)
+            token_type = token.token_type
+            if token.is_error and token.message:
+                token_type = f"{token.token_type}: {token.message}"
+
+            values = [
+                str(token.code),
+                token_type,
+                self.format_lexeme_for_table(token.lexeme),
+                self.format_location_for_table(token),
+            ]
+            payload = (token.line, token.start_col, token.is_error)
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, payload)
+                if token.is_error:
+                    item.setForeground(QColor("#b00020"))
+                self.output_table.setItem(row, col, item)
+
+    def format_lexeme_for_table(self, lexeme):
+        if lexeme == "\n":
+            return "(перенос строки)"
+        if not lexeme:
+            return "(пусто)"
+        if all(ch in " \t\r" for ch in lexeme):
+            parts = []
+            spaces = lexeme.count(" ")
+            tabs = lexeme.count("\t")
+            if spaces:
+                parts.append(f"пробел x{spaces}" if spaces > 1 else "пробел")
+            if tabs:
+                parts.append(f"табуляция x{tabs}" if tabs > 1 else "табуляция")
+            if not parts:
+                return "(разделитель)"
+            return "(" + ", ".join(parts) + ")"
+        return lexeme.replace("\t", "\\t").replace("\r", "\\r").replace("\n", "\\n")
+
+    def format_location_for_table(self, token):
+        if self.lang == "en":
+            return f"line {token.line}, {token.start_col}-{token.end_col}"
+        return f"строка {token.line}, {token.start_col}-{token.end_col}"
+
+    def handle_result_row_click(self, row, _col):
+        item = self.output_table.item(row, 0)
+        if not item:
             return
+        payload = item.data(Qt.UserRole)
+        if not payload or len(payload) != 3:
+            return
+        line, col, is_error = payload
+        if not is_error:
+            return
+        self.go_to_position(line, col)
 
-        lines = text.splitlines()
-        if not lines:
-            lines = [text]
-
-        errors = []
-        stack = []
-        pairs = {")": "(", "]": "[", "}": "{"}
-        opens = set(pairs.values())
-        keyword_set = {
-            "if", "else", "for", "while", "return", "break", "continue", "def", "class",
-            "import", "from", "try", "except", "finally", "with", "as", "pass",
-            "int", "float", "char", "double", "void", "struct", "const", "static",
-            "public", "private", "protected", "switch", "case", "default",
-        }
-
-        for line_no, line in enumerate(lines, start=1):
-            for col_no, ch in enumerate(line, start=1):
-                if ch in opens:
-                    stack.append((ch, line_no, col_no))
-                elif ch in pairs:
-                    if not stack or stack[-1][0] != pairs[ch]:
-                        errors.append((line_no, col_no, f"Несогласованная скобка '{ch}'"))
-                    else:
-                        stack.pop()
-                elif ch == "@":
-                    errors.append((line_no, col_no, "Недопустимый символ '@'"))
-
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith("#") or stripped.startswith("//"):
-                continue
-            if stripped.endswith((";", "{", "}", ":")):
-                continue
-            if re.match(r"^(if|for|while|switch)\s*\(.*\)$", stripped):
-                continue
-            if stripped in {"else", "do"}:
-                continue
-            if stripped.startswith("else "):
-                continue
-            if "=" in stripped or re.search(r"\b(return|break|continue)\b", stripped):
-                errors.append((line_no, max(len(line), 1), "Возможен пропуск ';'"))
-
-        for ch, line_no, col_no in reversed(stack):
-            errors.append((line_no, col_no, f"Нет закрывающей скобки для '{ch}'"))
-
-        words = re.findall(r"[A-Za-z_][A-Za-z_0-9]*", text)
-        numbers = re.findall(r"\b\d+(\.\d+)?\b", text)
-        keywords_found = sum(1 for w in words if w in keyword_set)
-
-        result_lines = [
-            "Результаты анализа",
-            f"Строк: {len(lines)}",
-            f"Символов: {len(text)}",
-            f"Идентификаторов/слов: {len(words)}",
-            f"Чисел: {len(numbers)}",
-            f"Ключевых слов: {keywords_found}",
-            "",
-        ]
-
-        if errors:
-            result_lines.append("Ошибки:")
-            for line_no, col_no, msg in errors:
-                result_lines.append(f"L{line_no}:C{col_no} {msg}")
+    def go_to_position(self, line, col):
+        editor = self.current_editor()
+        if not editor:
+            return
+        block = editor.document().findBlockByNumber(max(0, line - 1))
+        if not block.isValid():
+            return
+        pos = block.position() + max(0, col - 1)
+        cursor = editor.textCursor()
+        cursor.setPosition(pos)
+        editor.setTextCursor(cursor)
+        editor.setFocus()
+        if self.lang == "en":
+            self.statusBar().showMessage(f"Cursor moved to line {line}, column {col}", 2500)
         else:
-            result_lines.append("Ошибок не найдено.")
-
-        self.output_text.setPlainText("\n".join(result_lines))
-        self.fill_errors_table(errors)
-        if errors:
-            self.output_tabs.setCurrentWidget(self.output_errors)
-        else:
-            self.output_tabs.setCurrentWidget(self.output_text)
-        self.statusBar().showMessage("Анализ завершен", 2000)
-
-    def fill_errors_table(self, errors):
-        self.output_errors.setRowCount(0)
-        for row, (line_no, col_no, msg) in enumerate(errors):
-            self.output_errors.insertRow(row)
-            self.output_errors.setItem(row, 0, QTableWidgetItem(str(line_no)))
-            self.output_errors.setItem(row, 1, QTableWidgetItem(str(col_no)))
-            self.output_errors.setItem(row, 2, QTableWidgetItem(msg))
+            self.statusBar().showMessage(f"Курсор установлен: строка {line}, столбец {col}", 2500)
 
     def show_help(self):
         if self.lang == "en":
@@ -825,7 +1047,7 @@ class MainWindow(QMainWindow):
                 "File: new, open, save, save as, exit.\n"
                 "Edit: undo/redo, cut/copy/paste, delete, select all.\n"
                 "Text: study materials and program source code.\n"
-                "Run: basic text analysis (F5), output goes to the lower area.\n"
+                "Run: lexical scanner for Elixir tuple declaration (F5), output goes to the lower area.\n"
                 "Help: function description and about dialog."
             )
             QMessageBox.information(self, "Help", text)
@@ -834,16 +1056,16 @@ class MainWindow(QMainWindow):
             "Файл: создать, открыть, сохранить, сохранить как, выход.\n"
             "Правка: отмена/повтор, вырезать/копировать/вставить, удалить, выделить все.\n"
             "Текст: учебные материалы и исходный код программы.\n"
-            "Пуск: базовый анализ текста (F5), вывод результата в нижнюю область.\n"
+            "Пуск: запуск лексического анализатора объявления кортежа Elixir (F5).\n"
             "Справка: описание функций и окно о программе."
         )
         QMessageBox.information(self, "Справка", text)
 
     def show_about(self):
         if self.lang == "en":
-            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 1.")
+            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 2.")
             return
-        QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 1.")
+        QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 2.")
 
     def update_cursor_status(self):
         editor = self.current_editor()
@@ -951,11 +1173,12 @@ class MainWindow(QMainWindow):
             "topic_literature": "Список литературы",
             "topic_source": "Исходный код программы",
             "output_result": "Результат",
-            "output_errors": "Ошибки",
+            "output_tokens": "Лексемы",
             "output_placeholder": "Результаты анализа будут отображаться здесь",
-            "error_col_line": "Строка",
-            "error_col_col": "Столбец",
-            "error_col_msg": "Сообщение",
+            "token_col_code": "Код",
+            "token_col_type": "Тип лексемы",
+            "token_col_lexeme": "Лексема",
+            "token_col_location": "Местоположение",
         }
         en = {
             "menu_file": "File",
@@ -993,11 +1216,12 @@ class MainWindow(QMainWindow):
             "topic_literature": "Literature",
             "topic_source": "Program Source Code",
             "output_result": "Result",
-            "output_errors": "Errors",
+            "output_tokens": "Tokens",
             "output_placeholder": "Analysis results will be shown here",
-            "error_col_line": "Line",
-            "error_col_col": "Column",
-            "error_col_msg": "Message",
+            "token_col_code": "Code",
+            "token_col_type": "Token Type",
+            "token_col_lexeme": "Lexeme",
+            "token_col_location": "Location",
         }
         t = ru if self.lang == "ru" else en
 
@@ -1042,9 +1266,16 @@ class MainWindow(QMainWindow):
         self.act_lang_en.setChecked(self.lang == "en")
 
         self.output_tabs.setTabText(0, t["output_result"])
-        self.output_tabs.setTabText(1, t["output_errors"])
+        self.output_tabs.setTabText(1, t["output_tokens"])
         self.output_text.setPlaceholderText(t["output_placeholder"])
-        self.output_errors.setHorizontalHeaderLabels([t["error_col_line"], t["error_col_col"], t["error_col_msg"]])
+        self.output_table.setHorizontalHeaderLabels(
+            [
+                t["token_col_code"],
+                t["token_col_type"],
+                t["token_col_lexeme"],
+                t["token_col_location"],
+            ]
+        )
 
         for i in range(self.editor_tabs.count()):
             self.update_editor_tab(i)

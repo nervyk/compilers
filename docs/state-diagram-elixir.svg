@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1320" viewBox="0 0 1200 1320">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e8e8e8" />
+    </marker>
+    <style>
+      .bg { fill: #111318; }
+      .state { fill: #151922; stroke: #e8e8e8; stroke-width: 2; }
+      .line { stroke: #e8e8e8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .label { fill: #f2f2f2; font: 30px 'Arial', sans-serif; }
+      .small { fill: #f2f2f2; font: 26px 'Arial', sans-serif; }
+      .out { fill: #f2f2f2; font: 34px 'Arial', sans-serif; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="1320" />
+
+  <!-- Start and main spine -->
+  <ellipse class="state" cx="110" cy="90" rx="55" ry="40" />
+  <text class="label" x="77" y="103">start</text>
+  <line class="line" x1="110" y1="130" x2="110" y2="205" />
+
+  <circle class="state" cx="110" cy="255" r="42" />
+  <text class="label" x="98" y="267">0</text>
+
+  <line class="line" x1="110" y1="297" x2="110" y2="1250" />
+
+  <!-- State 1 -->
+  <line class="line" x1="110" y1="255" x2="288" y2="255" />
+  <text class="small" x="185" y="246">LETTER</text>
+  <circle class="state" cx="330" cy="255" r="42" />
+  <text class="label" x="318" y="267">1</text>
+  <path class="line" d="M 300 216 C 300 176 360 176 360 216" />
+  <text class="small" x="293" y="171">LETTER</text>
+  <line class="line" x1="372" y1="250" x2="585" y2="180" />
+  <line class="line" x1="372" y1="260" x2="585" y2="270" />
+  <text class="out" x="610" y="186">CODE 1 / Идентификатор</text>
+  <text class="out" x="610" y="276">CODE 2 / Ключевые слова</text>
+
+  <!-- State 2 -->
+  <line class="line" x1="110" y1="385" x2="288" y2="385" />
+  <text class="small" x="214" y="375">=</text>
+  <circle class="state" cx="330" cy="385" r="42" />
+  <text class="label" x="318" y="397">2</text>
+  <line class="line" x1="372" y1="385" x2="585" y2="385" />
+  <text class="out" x="610" y="392">CODE 3 / Равенство</text>
+
+  <!-- State 3 -->
+  <line class="line" x1="110" y1="545" x2="288" y2="545" />
+  <text class="small" x="214" y="531">(</text>
+  <circle class="state" cx="330" cy="545" r="42" />
+  <text class="label" x="318" y="557">3</text>
+  <line class="line" x1="372" y1="545" x2="585" y2="545" />
+  <text class="out" x="610" y="552">CODE 4 / начало</text>
+
+  <!-- State 4,5,6 -->
+  <line class="line" x1="110" y1="760" x2="288" y2="760" />
+  <text class="small" x="185" y="748">DIGIT</text>
+  <circle class="state" cx="330" cy="760" r="42" />
+  <text class="label" x="318" y="772">4</text>
+  <path class="line" d="M 300 721 C 300 681 360 681 360 721" />
+  <text class="small" x="286" y="672">DIGIT</text>
+  <line class="line" x1="362" y1="760" x2="498" y2="820" />
+  <line class="line" x1="372" y1="750" x2="498" y2="720" />
+  <text class="small" x="412" y="738">CODE 5 / INTEGER</text>
+  <text class="small" x="405" y="780">.</text>
+  <circle class="state" cx="540" cy="820" r="38" />
+  <text class="label" x="528" y="831">5</text>
+  <line class="line" x1="578" y1="820" x2="722" y2="820" />
+  <text class="small" x="615" y="812">DIGIT</text>
+  <circle class="state" cx="760" cy="820" r="42" />
+  <text class="label" x="748" y="832">6</text>
+  <path class="line" d="M 730 782 C 730 742 790 742 790 782" />
+  <text class="small" x="735" y="737">DIGIT</text>
+  <line class="line" x1="802" y1="820" x2="915" y2="820" />
+  <text class="out" x="940" y="827">CODE 5 / Десятичное число</text>
+
+  <!-- State 7 -->
+  <line class="line" x1="110" y1="965" x2="288" y2="965" />
+  <text class="small" x="214" y="953">"</text>
+  <circle class="state" cx="330" cy="965" r="42" />
+  <text class="label" x="318" y="977">7</text>
+  <path class="line" d="M 300 926 C 300 886 360 886 360 926" />
+  <text class="small" x="286" y="878">LETTER</text>
+  <line class="line" x1="372" y1="965" x2="700" y2="965" />
+  <text class="small" x="488" y="955">"</text>
+  <text class="out" x="730" y="972">CODE 6 строка</text>
+
+  <!-- State 8 -->
+  <line class="line" x1="110" y1="1130" x2="288" y2="1130" />
+  <text class="small" x="195" y="1114">"_"</text>
+  <circle class="state" cx="330" cy="1130" r="42" />
+  <text class="label" x="318" y="1142">8</text>
+  <line class="line" x1="372" y1="1130" x2="700" y2="1130" />
+  <text class="out" x="730" y="1137">CODE 8 / Пробел</text>
+
+  <!-- State 9 -->
+  <line class="line" x1="110" y1="1250" x2="288" y2="1250" />
+  <text class="small" x="214" y="1236">)</text>
+  <circle class="state" cx="330" cy="1250" r="42" />
+  <text class="label" x="318" y="1262">9</text>
+  <line class="line" x1="372" y1="1250" x2="725" y2="1250" />
+  <text class="out" x="750" y="1257">CODE 9 / Окончание</text>
+
+  <!-- Error -->
+  <text class="out" x="700" y="1310">ERROR</text>
+  <line class="line" x1="110" y1="1250" x2="700" y2="1310" />
+</svg>
