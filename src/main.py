@@ -59,6 +59,7 @@ class LexicalAnalyzer:
         "TUPLE_CLOSE": (13, "разделитель (закрывающая скобка кортежа)"),
         "WHITESPACE": (14, "разделитель (пробел/табуляция)"),
         "NEWLINE": (15, "разделитель (перенос строки)"),
+        "SEMICOLON": (16, "конец оператора"),
         "ERROR": (99, "ошибка"),
     }
 
@@ -67,6 +68,7 @@ class LexicalAnalyzer:
         ",": "COMMA",
         "{": "TUPLE_OPEN",
         "}": "TUPLE_CLOSE",
+        ";": "SEMICOLON",
     }
 
     def analyze(self, text):
@@ -177,9 +179,16 @@ class LexicalAnalyzer:
                 col += 1
                 continue
 
-            self._push_error(result, ch, line, col, col, f"недопустимый символ '{ch}'")
-            i += 1
-            col += 1
+            error_start = i
+            while i < n and not self._is_token_start(text[i]):
+                i += 1
+                col += 1
+            invalid_part = text[error_start:i]
+            if len(invalid_part) == 1:
+                message = f"недопустимый символ '{invalid_part}'"
+            else:
+                message = f"недопустимая последовательность '{invalid_part}'"
+            self._push_error(result, invalid_part, line, start_col, col - 1, message)
 
         return result
 
@@ -218,6 +227,243 @@ class LexicalAnalyzer:
     @staticmethod
     def _is_identifier_part(ch):
         return ch == "_" or ch.isdigit() or ("a" <= ch <= "z")
+
+    def _is_token_start(self, ch):
+        if ch == "\n":
+            return True
+        if ch in " \t\r":
+            return True
+        if ch.isdigit():
+            return True
+        if self._is_identifier_start(ch):
+            return True
+        if ch == ":":
+            return True
+        if ch == '"':
+            return True
+        return ch in self.SINGLE_CHAR_TOKENS
+
+
+@dataclass
+class SyntaxIssue:
+    fragment: str
+    line: int
+    col: int
+    description: str
+
+
+class SyntaxAnalyzer:
+    CODE_INTEGER = 1
+    CODE_IDENTIFIER = 2
+    CODE_ATOM = 3
+    CODE_STRING = 4
+    CODE_ASSIGN = 10
+    CODE_COMMA = 11
+    CODE_TUPLE_OPEN = 12
+    CODE_TUPLE_CLOSE = 13
+    CODE_WHITESPACE = 14
+    CODE_NEWLINE = 15
+    CODE_SEMICOLON = 16
+
+    def analyze(self, lexemes):
+        self.tokens = [token for token in lexemes if token.code != self.CODE_WHITESPACE and not token.is_error]
+        self.index = 0
+        self.errors = []
+        self.seen = set()
+
+        if not self.tokens or all(token.code == self.CODE_NEWLINE for token in self.tokens):
+            self._add_issue(None, "Ожидалось объявление кортежа")
+            return self.errors
+
+        self._parse_program()
+        return self.errors
+
+    def _parse_program(self):
+        self._skip_newlines()
+        while not self._at_end():
+            self._parse_statement()
+            self._skip_newlines()
+
+    def _parse_statement(self):
+        if self._code() != self.CODE_IDENTIFIER:
+            self._add_issue(self._current(), "Ожидался идентификатор в начале объявления")
+            self._synchronize({self.CODE_IDENTIFIER, self.CODE_NEWLINE})
+            if self._code() != self.CODE_IDENTIFIER:
+                return
+
+        self._advance()
+
+        if self._code() != self.CODE_ASSIGN:
+            self._add_issue(self._current(), "Ожидался оператор '=' после идентификатора")
+            # Локальная нейтрализация: считаем '=' вставленным и продолжаем.
+        else:
+            self._advance()
+
+        self._parse_tuple()
+        self._parse_statement_ending()
+
+    def _parse_statement_ending(self):
+        code = self._code()
+        if code == self.CODE_SEMICOLON:
+            self._advance()
+            return
+        if code == self.CODE_NEWLINE:
+            self._add_issue(self._current(), "Ожидался ';' в конце строки")
+            return
+        if code in {None, self.CODE_IDENTIFIER}:
+            self._add_issue(self._current(), "Ожидался ';' в конце объявления")
+            return
+        self._add_issue(self._current(), "Ожидался ';' в конце объявления")
+        self._synchronize({self.CODE_SEMICOLON, self.CODE_NEWLINE, self.CODE_IDENTIFIER})
+        if self._code() == self.CODE_SEMICOLON:
+            self._advance()
+
+    def _parse_tuple(self):
+        if self._code() != self.CODE_TUPLE_OPEN:
+            self._add_issue(self._current(), "Ожидалась '{' для начала кортежа")
+            if self._code() in {None, self.CODE_NEWLINE}:
+                return
+        else:
+            self._advance()
+
+        if self._code() == self.CODE_TUPLE_CLOSE:
+            self._advance()
+            return
+
+        expect_value = True
+        while not self._at_end():
+            code = self._code()
+            token = self._current()
+
+            if code == self.CODE_NEWLINE:
+                self._add_issue(token, "Ожидалась '}' до конца строки")
+                return
+
+            if expect_value:
+                if code == self.CODE_COMMA:
+                    self._add_issue(token, "Пропущено значение кортежа перед запятой")
+                    self._advance()
+                    continue
+                if code == self.CODE_TUPLE_CLOSE:
+                    self._add_issue(token, "Пропущено значение кортежа перед '}'")
+                    self._advance()
+                    return
+                if self._is_value_start(token):
+                    self._parse_value()
+                    expect_value = False
+                    continue
+                self._add_issue(token, "Ожидалось значение кортежа")
+                self._synchronize({self.CODE_COMMA, self.CODE_TUPLE_CLOSE, self.CODE_NEWLINE})
+                if self._code() == self.CODE_COMMA:
+                    self._advance()
+                    expect_value = True
+                    continue
+                if self._code() == self.CODE_TUPLE_CLOSE:
+                    self._advance()
+                    return
+                return
+
+            if code == self.CODE_COMMA:
+                self._advance()
+                expect_value = True
+                continue
+            if code == self.CODE_TUPLE_CLOSE:
+                self._advance()
+                return
+            if self._is_value_start(token):
+                self._add_issue(token, "Ожидалась ',' между элементами кортежа")
+                # Локальная нейтрализация: считаем запятую вставленной.
+                expect_value = True
+                continue
+
+            self._add_issue(token, "Ожидалась ',' или '}'")
+            self._synchronize({self.CODE_COMMA, self.CODE_TUPLE_CLOSE, self.CODE_NEWLINE})
+            if self._code() == self.CODE_COMMA:
+                self._advance()
+                expect_value = True
+                continue
+            if self._code() == self.CODE_TUPLE_CLOSE:
+                self._advance()
+            return
+
+        self._add_issue(self._current(), "Ожидалась '}' в конце кортежа")
+
+    def _parse_value(self):
+        code = self._code()
+        if code in {self.CODE_IDENTIFIER, self.CODE_ATOM, self.CODE_INTEGER, self.CODE_STRING}:
+            self._advance()
+            return True
+        if code == self.CODE_TUPLE_OPEN:
+            self._parse_tuple()
+            return True
+        self._add_issue(self._current(), "Ожидалось значение кортежа")
+        if not self._at_end():
+            self._advance()
+        return False
+
+    def _is_value_start(self, token):
+        if not token:
+            return False
+        return token.code in {
+            self.CODE_IDENTIFIER,
+            self.CODE_ATOM,
+            self.CODE_INTEGER,
+            self.CODE_STRING,
+            self.CODE_TUPLE_OPEN,
+        }
+
+    def _add_issue(self, token, description):
+        if token is None:
+            if self.tokens:
+                last = self.tokens[-1]
+                line = last.line
+                col = last.end_col
+                fragment = "EOF"
+            else:
+                line = 1
+                col = 1
+                fragment = "(пусто)"
+        else:
+            line = token.line
+            col = token.start_col
+            fragment = self._format_fragment(token)
+
+        key = (line, col, description)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        self.errors.append(SyntaxIssue(fragment=fragment, line=line, col=col, description=description))
+
+    def _format_fragment(self, token):
+        if token.code == self.CODE_NEWLINE:
+            return "\\n"
+        return token.lexeme.replace("\n", "\\n").replace("\t", "\\t") or "(пусто)"
+
+    def _synchronize(self, sync_codes):
+        while not self._at_end() and self._code() not in sync_codes:
+            self._advance()
+
+    def _skip_newlines(self):
+        while self._code() == self.CODE_NEWLINE:
+            self._advance()
+
+    def _current(self):
+        if self.index >= len(self.tokens):
+            return None
+        return self.tokens[self.index]
+
+    def _code(self):
+        token = self._current()
+        if token is None:
+            return None
+        return token.code
+
+    def _at_end(self):
+        return self.index >= len(self.tokens)
+
+    def _advance(self):
+        if not self._at_end():
+            self.index += 1
 
 
 class BasicHighlighter(QSyntaxHighlighter):
@@ -379,28 +625,32 @@ class MainWindow(QMainWindow):
                 "расширению функционала."
             ),
             "Грамматика": (
-                "Пример упрощенной грамматики выражений:\n\n"
-                "<expr> -> <term> ((+|-) <term>)*\n"
-                "<term> -> <factor> ((*|/) <factor>)*\n"
-                "<factor> -> id | number | '(' <expr> ')'\n\n"
-                "Эта информация используется как справочный раздел меню 'Текст'."
+                "Грамматика объявления кортежа Elixir:\n\n"
+                "<program>   -> <stmt_list>\n"
+                "<stmt_list> -> <stmt> (<nl>+ <stmt>)*\n"
+                "<stmt>      -> <id> '=' <tuple> ';'\n"
+                "<tuple>     -> '{' <elems_opt> '}'\n"
+                "<elems_opt> -> ε | <elems>\n"
+                "<elems>     -> <value> (',' <value>)*\n"
+                "<value>     -> <id> | <atom> | <int> | <string> | <tuple>"
             ),
             "Классификация грамматики": (
-                "Для лабораторной работы используется контекстно-свободная грамматика.\n\n"
-                "В дальнейшем раздел может быть расширен описанием классификации по Хомскому, "
-                "свойств грамматики и ограничений выбранного метода анализа."
+                "Используемая грамматика относится к контекстно-свободным (тип 2 по Хомскому).\n\n"
+                "Слева в каждом правиле один нетерминал, а рекурсия в <value> -> <tuple> "
+                "позволяет описывать вложенные кортежи."
             ),
             "Метод анализа": (
-                "Реализован лексический анализатор для варианта\n"
-                "'объявление кортежа на языке Elixir'.\n\n"
-                "Сканер выделяет лексемы (идентификаторы, атомы, числа, строки, "
-                "операторы и разделители), определяет их тип и позицию, "
-                "а недопустимые символы помечает как ошибки."
+                "Реализована связка: лексический анализ + синтаксический анализ\n"
+                "для варианта 'объявление кортежа на языке Elixir'.\n\n"
+                "Парсер построен на рекурсивном спуске и использует нейтрализацию ошибок:\n"
+                "при обнаружении синтаксической ошибки анализ не прерывается,\n"
+                "а продолжается с точки синхронизации."
             ),
             "Тестовый пример": (
-                "person = {:user, \"Andrey\", 21}\n"
-                "coords = {10, 20, 30}\n"
-                "status = {:ok, 200}\n"
+                "person = {:user, \"Andrey\", 21};\n"
+                "coords = {10, 20, 30};\n"
+                "status = {:ok, 200};\n"
+                "bad = {:ok \"no-comma\", 1}\n"
             ),
             "Список литературы": (
                 "1. Ахо А., Сети Р., Ульман Д. Компиляторы: принципы, технологии и инструменты.\n"
@@ -430,8 +680,19 @@ class MainWindow(QMainWindow):
         self.output_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.output_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.output_table.cellClicked.connect(self.handle_result_row_click)
+        self.output_syntax_table = QTableWidget(0, 3)
+        self.output_syntax_table.setHorizontalHeaderLabels(["Неверный фрагмент", "Местоположение", "Описание"])
+        self.output_syntax_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.output_syntax_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.output_syntax_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.output_syntax_table.verticalHeader().setVisible(False)
+        self.output_syntax_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.output_syntax_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.output_syntax_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.output_syntax_table.cellClicked.connect(self.handle_syntax_row_click)
         self.output_tabs.addTab(self.output_text, "Результат")
         self.output_tabs.addTab(self.output_table, "Лексемы")
+        self.output_tabs.addTab(self.output_syntax_table, "Синтаксис")
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.editor_tabs)
@@ -893,6 +1154,8 @@ class MainWindow(QMainWindow):
         font.setPointSize(new_size)
         self.output_table.setFont(font)
         self.output_table.horizontalHeader().setFont(font)
+        self.output_syntax_table.setFont(font)
+        self.output_syntax_table.horizontalHeader().setFont(font)
 
     def show_text_topic(self, title):
         sender = self.sender()
@@ -916,51 +1179,66 @@ class MainWindow(QMainWindow):
         if not editor:
             return
         text = editor.toPlainText()
-        lexemes = LexicalAnalyzer().analyze(text)
-        self.fill_result_table(lexemes)
 
-        error_lexemes = [token for token in lexemes if token.is_error]
+        lexemes = LexicalAnalyzer().analyze(text)
+        syntax_issues = SyntaxAnalyzer().analyze(lexemes)
+        self.fill_result_table(lexemes)
+        self.fill_syntax_table(syntax_issues)
+
+        lexical_errors = [token for token in lexemes if token.is_error]
+        syntax_errors = len(syntax_issues)
+        total_errors = len(lexical_errors) + syntax_errors
         if self.lang == "en":
-            if text:
-                lines_count = text.count("\n") + 1
-                report = [
-                    "Lexical analysis result (Elixir tuple declaration)",
-                    f"Lines: {lines_count}",
-                    f"Characters: {len(text)}",
-                    f"Lexemes: {len(lexemes)}",
-                    f"Errors: {len(error_lexemes)}",
-                    "",
-                ]
-                if error_lexemes:
-                    report.append("Errors:")
-                    for token in error_lexemes:
-                        report.append(f"L{token.line}:C{token.start_col} {token.message}")
-                else:
-                    report.append("No lexical errors.")
-            else:
-                report = ["Input is empty."]
+            lines_count = text.count("\n") + 1 if text else 0
+            report = [
+                "Lexical + syntax analysis result (Elixir tuple declaration)",
+                f"Lines: {lines_count}",
+                f"Characters: {len(text)}",
+                f"Lexemes: {len(lexemes)}",
+                f"Lexical errors: {len(lexical_errors)}",
+                f"Syntax errors: {syntax_errors}",
+                f"Total errors: {total_errors}",
+                "",
+            ]
+            if lexical_errors:
+                report.append("Lexical errors:")
+                for token in lexical_errors:
+                    report.append(f"L{token.line}:C{token.start_col} {token.message}")
+                report.append("")
+            if syntax_issues:
+                report.append("Syntax errors:")
+                for issue in syntax_issues:
+                    report.append(f"L{issue.line}:C{issue.col} {issue.description}")
+            if not lexical_errors and not syntax_issues:
+                report.append("No errors found.")
         else:
-            if text:
-                lines_count = text.count("\n") + 1
-                report = [
-                    "Результаты лексического анализа (объявление кортежа на Elixir)",
-                    f"Строк: {lines_count}",
-                    f"Символов: {len(text)}",
-                    f"Лексем: {len(lexemes)}",
-                    f"Ошибок: {len(error_lexemes)}",
-                    "",
-                ]
-                if error_lexemes:
-                    report.append("Ошибки:")
-                    for token in error_lexemes:
-                        report.append(f"L{token.line}:C{token.start_col} {token.message}")
-                else:
-                    report.append("Ошибок не найдено.")
-            else:
-                report = ["Пустой текст. Нечего анализировать."]
+            lines_count = text.count("\n") + 1 if text else 0
+            report = [
+                "Результаты лексического и синтаксического анализа (объявление кортежа на Elixir)",
+                f"Строк: {lines_count}",
+                f"Символов: {len(text)}",
+                f"Лексем: {len(lexemes)}",
+                f"Лексических ошибок: {len(lexical_errors)}",
+                f"Синтаксических ошибок: {syntax_errors}",
+                f"Общее количество ошибок: {total_errors}",
+                "",
+            ]
+            if lexical_errors:
+                report.append("Лексические ошибки:")
+                for token in lexical_errors:
+                    report.append(f"L{token.line}:C{token.start_col} {token.message}")
+                report.append("")
+            if syntax_issues:
+                report.append("Синтаксические ошибки:")
+                for issue in syntax_issues:
+                    report.append(f"L{issue.line}:C{issue.col} {issue.description}")
+            if not lexical_errors and not syntax_issues:
+                report.append("Ошибок не найдено.")
 
         self.output_text.setPlainText("\n".join(report))
-        if text:
+        if syntax_issues:
+            self.output_tabs.setCurrentWidget(self.output_syntax_table)
+        elif lexical_errors:
             self.output_tabs.setCurrentWidget(self.output_table)
         else:
             self.output_tabs.setCurrentWidget(self.output_text)
@@ -989,6 +1267,22 @@ class MainWindow(QMainWindow):
                     item.setForeground(QColor("#b00020"))
                 self.output_table.setItem(row, col, item)
 
+    def fill_syntax_table(self, issues):
+        self.output_syntax_table.setRowCount(0)
+        for row, issue in enumerate(issues):
+            self.output_syntax_table.insertRow(row)
+            values = [
+                issue.fragment,
+                self.format_syntax_location(issue),
+                issue.description,
+            ]
+            payload = (issue.line, issue.col)
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, payload)
+                item.setForeground(QColor("#b00020"))
+                self.output_syntax_table.setItem(row, col, item)
+
     def format_lexeme_for_table(self, lexeme):
         if lexeme == "\n":
             return "(перенос строки)"
@@ -1012,6 +1306,11 @@ class MainWindow(QMainWindow):
             return f"line {token.line}, {token.start_col}-{token.end_col}"
         return f"строка {token.line}, {token.start_col}-{token.end_col}"
 
+    def format_syntax_location(self, issue):
+        if self.lang == "en":
+            return f"line {issue.line}, position {issue.col}"
+        return f"строка {issue.line}, позиция {issue.col}"
+
     def handle_result_row_click(self, row, _col):
         item = self.output_table.item(row, 0)
         if not item:
@@ -1022,6 +1321,16 @@ class MainWindow(QMainWindow):
         line, col, is_error = payload
         if not is_error:
             return
+        self.go_to_position(line, col)
+
+    def handle_syntax_row_click(self, row, _col):
+        item = self.output_syntax_table.item(row, 0)
+        if not item:
+            return
+        payload = item.data(Qt.UserRole)
+        if not payload or len(payload) != 2:
+            return
+        line, col = payload
         self.go_to_position(line, col)
 
     def go_to_position(self, line, col):
@@ -1047,7 +1356,8 @@ class MainWindow(QMainWindow):
                 "File: new, open, save, save as, exit.\n"
                 "Edit: undo/redo, cut/copy/paste, delete, select all.\n"
                 "Text: study materials and program source code.\n"
-                "Run: lexical scanner for Elixir tuple declaration (F5), output goes to the lower area.\n"
+                "Run: lexical + syntax analysis for Elixir tuple declaration (F5).\n"
+                "Each declaration line must end with ';'.\n"
                 "Help: function description and about dialog."
             )
             QMessageBox.information(self, "Help", text)
@@ -1056,16 +1366,17 @@ class MainWindow(QMainWindow):
             "Файл: создать, открыть, сохранить, сохранить как, выход.\n"
             "Правка: отмена/повтор, вырезать/копировать/вставить, удалить, выделить все.\n"
             "Текст: учебные материалы и исходный код программы.\n"
-            "Пуск: запуск лексического анализатора объявления кортежа Elixir (F5).\n"
+            "Пуск: запуск лексического и синтаксического анализатора объявления кортежа Elixir (F5).\n"
+            "Каждая строка объявления должна заканчиваться ';'.\n"
             "Справка: описание функций и окно о программе."
         )
         QMessageBox.information(self, "Справка", text)
 
     def show_about(self):
         if self.lang == "en":
-            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 2.")
+            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 3.")
             return
-        QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 2.")
+        QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 3.")
 
     def update_cursor_status(self):
         editor = self.current_editor()
@@ -1174,11 +1485,15 @@ class MainWindow(QMainWindow):
             "topic_source": "Исходный код программы",
             "output_result": "Результат",
             "output_tokens": "Лексемы",
+            "output_syntax": "Синтаксис",
             "output_placeholder": "Результаты анализа будут отображаться здесь",
             "token_col_code": "Код",
             "token_col_type": "Тип лексемы",
             "token_col_lexeme": "Лексема",
             "token_col_location": "Местоположение",
+            "syntax_col_fragment": "Неверный фрагмент",
+            "syntax_col_location": "Местоположение",
+            "syntax_col_description": "Описание",
         }
         en = {
             "menu_file": "File",
@@ -1217,11 +1532,15 @@ class MainWindow(QMainWindow):
             "topic_source": "Program Source Code",
             "output_result": "Result",
             "output_tokens": "Tokens",
+            "output_syntax": "Syntax",
             "output_placeholder": "Analysis results will be shown here",
             "token_col_code": "Code",
             "token_col_type": "Token Type",
             "token_col_lexeme": "Lexeme",
             "token_col_location": "Location",
+            "syntax_col_fragment": "Invalid Fragment",
+            "syntax_col_location": "Location",
+            "syntax_col_description": "Description",
         }
         t = ru if self.lang == "ru" else en
 
@@ -1267,6 +1586,7 @@ class MainWindow(QMainWindow):
 
         self.output_tabs.setTabText(0, t["output_result"])
         self.output_tabs.setTabText(1, t["output_tokens"])
+        self.output_tabs.setTabText(2, t["output_syntax"])
         self.output_text.setPlaceholderText(t["output_placeholder"])
         self.output_table.setHorizontalHeaderLabels(
             [
@@ -1274,6 +1594,13 @@ class MainWindow(QMainWindow):
                 t["token_col_type"],
                 t["token_col_lexeme"],
                 t["token_col_location"],
+            ]
+        )
+        self.output_syntax_table.setHorizontalHeaderLabels(
+            [
+                t["syntax_col_fragment"],
+                t["syntax_col_location"],
+                t["syntax_col_description"],
             ]
         )
 
