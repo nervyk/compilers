@@ -314,6 +314,7 @@ python3 src/main.py
 ```
 3. Выбрать нужный режим анализа и нажать `Пуск`.
 
+<img width="914" height="630" alt="image" src="https://github.com/user-attachments/assets/4dec193e-a404-40c6-aa56-8d883beaa208" />
 
 
 <img width="888" height="631" alt="image" src="https://github.com/user-attachments/assets/894819cd-3378-447f-bacc-a563ca5aff4c" />
