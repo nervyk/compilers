@@ -126,8 +126,6 @@ flowchart TD
     N -->|да| O["Финиш"]
 ```
 
-![Схема парсера](docs/parser-flow.svg)
-
 ### Схема автомата (состояния парсера)
 ```mermaid
 flowchart TD
