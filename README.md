@@ -313,3 +313,7 @@ pip install -r requirements.txt
 python3 src/main.py
 ```
 3. Выбрать нужный режим анализа и нажать `Пуск`.
+
+
+
+<img width="888" height="631" alt="image" src="https://github.com/user-attachments/assets/894819cd-3378-447f-bacc-a563ca5aff4c" />
