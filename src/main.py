@@ -1,4 +1,6 @@
 import sys
+import re
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from PySide6.QtCore import Qt, QRegularExpression, QSize, QRect
@@ -12,14 +14,17 @@ from PySide6.QtGui import (
     QColor,
     QIcon,
     QPainter,
+    QTextCursor,
     QTextFormat,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QDialog,
     QFileDialog,
     QHeaderView,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QTextEdit,
@@ -161,13 +166,12 @@ class LexicalAnalyzer:
                 if closed:
                     self._push_token(result, "STRING", text[start_i:i], line, start_col, col - 1)
                 else:
-                    end_col = max(start_col, col - 1)
                     self._push_error(
                         result,
-                        text[start_i:i],
+                        '"',
                         line,
                         start_col,
-                        end_col,
+                        start_col,
                         "незакрытый строковый литерал",
                     )
                 continue
@@ -466,6 +470,98 @@ class SyntaxAnalyzer:
             self.index += 1
 
 
+@dataclass
+class RegexHit:
+    value: str
+    start: int
+    length: int
+
+
+class RegexSearchEngine:
+    VIN_ALLOWED = frozenset("0123456789ABCDEFGHJKLMNPRSTUVWXYZ")
+
+    TASKS = {
+        "ssn": {
+            "pattern": r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)",
+            "flags": 0,
+            "title_ru": "SSN (XXX-XX-XXXX)",
+            "title_en": "SSN (XXX-XX-XXXX)",
+        },
+        "filesize": {
+            "pattern": r"(?<![\w.])\d+(?:\.\d+)?(?:KB|MB|GB|TB)\b",
+            "flags": re.IGNORECASE,
+            "title_ru": "Размер файла (KB/MB/GB/TB)",
+            "title_en": "File size (KB/MB/GB/TB)",
+        },
+        "vin": {
+            "pattern": r"\b[A-HJ-NPR-Z0-9]{17}\b",
+            "flags": re.IGNORECASE,
+            "title_ru": "VIN",
+            "title_en": "VIN",
+        },
+    }
+
+    def find(self, task_key, text):
+        task = self.TASKS.get(task_key)
+        if not task:
+            return []
+        if task_key == "vin":
+            return self._find_vin_by_automaton(text)
+        regex = re.compile(task["pattern"], task["flags"])
+        return [RegexHit(m.group(0), m.start(), m.end() - m.start()) for m in regex.finditer(text)]
+
+    def task_title(self, task_key, lang):
+        task = self.TASKS.get(task_key, {})
+        if lang == "en":
+            return task.get("title_en", task_key)
+        return task.get("title_ru", task_key)
+
+    def task_pattern(self, task_key):
+        task = self.TASKS.get(task_key, {})
+        return task.get("pattern", "")
+
+    def _find_vin_by_automaton(self, text):
+        hits = []
+        state = 0
+        start = -1
+
+        for index, ch in enumerate(text):
+            if self._is_vin_char(ch):
+                if state == 0:
+                    start = index
+                state += 1
+                if state > 17:
+                    state = 18
+                continue
+
+            if state == 17 and start >= 0:
+                end = index
+                if self._is_word_boundary_around(text, start, end):
+                    hits.append(RegexHit(text[start:end], start, end - start))
+
+            state = 0
+            start = -1
+
+        if state == 17 and start >= 0:
+            end = len(text)
+            if self._is_word_boundary_around(text, start, end):
+                hits.append(RegexHit(text[start:end], start, end - start))
+
+        return hits
+
+    def _is_vin_char(self, ch):
+        return ch.upper() in self.VIN_ALLOWED
+
+    @staticmethod
+    def _is_word_char(ch):
+        return ch.isalnum() or ch == "_"
+
+    def _is_word_boundary_around(self, text, start, end):
+        left_ok = start == 0 or not self._is_word_char(text[start - 1])
+        right_ok = end >= len(text) or not self._is_word_char(text[end])
+        return left_ok and right_ok
+
+
 class BasicHighlighter(QSyntaxHighlighter):
     def __init__(self, document):
         super().__init__(document)
@@ -615,6 +711,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setAcceptDrops(True)
         self.lang = "ru"
+        self.regex_engine = RegexSearchEngine()
         self.untitled_counter = 1
         self.text_topics = {
             "Постановка задачи": (
@@ -640,17 +737,16 @@ class MainWindow(QMainWindow):
                 "позволяет описывать вложенные кортежи."
             ),
             "Метод анализа": (
-                "Реализована связка: лексический анализ + синтаксический анализ\n"
-                "для варианта 'объявление кортежа на языке Elixir'.\n\n"
-                "Парсер построен на рекурсивном спуске и использует нейтрализацию ошибок:\n"
-                "при обнаружении синтаксической ошибки анализ не прерывается,\n"
-                "а продолжается с точки синхронизации."
+                "Реализованы два режима:\n"
+                "1) Синтаксический анализ объявления кортежа Elixir;\n"
+                "2) Поиск подстрок по регулярным выражениям (SSN, размеры файлов, VIN).\n\n"
+                "Режим выбирается в выпадающем списке на панели инструментов."
             ),
             "Тестовый пример": (
-                "person = {:user, \"Andrey\", 21};\n"
-                "coords = {10, 20, 30};\n"
-                "status = {:ok, 200};\n"
-                "bad = {:ok \"no-comma\", 1}\n"
+                "SSN: 123-45-6789\n"
+                "File size: 1.5GB, 256MB, 900KB\n"
+                "VIN: 1HGCM82633A004352\n"
+                "tuple = {:ok, \"Hello\", 42};\n"
             ),
             "Список литературы": (
                 "1. Ахо А., Сети Р., Ульман Д. Компиляторы: принципы, технологии и инструменты.\n"
@@ -690,9 +786,20 @@ class MainWindow(QMainWindow):
         self.output_syntax_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.output_syntax_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.output_syntax_table.cellClicked.connect(self.handle_syntax_row_click)
+        self.output_regex_table = QTableWidget(0, 3)
+        self.output_regex_table.setHorizontalHeaderLabels(["Найденная подстрока", "Начальная позиция", "Длина"])
+        self.output_regex_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.output_regex_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.output_regex_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.output_regex_table.verticalHeader().setVisible(False)
+        self.output_regex_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.output_regex_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.output_regex_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.output_regex_table.cellClicked.connect(self.handle_regex_row_click)
         self.output_tabs.addTab(self.output_text, "Результат")
         self.output_tabs.addTab(self.output_table, "Лексемы")
         self.output_tabs.addTab(self.output_syntax_table, "Синтаксис")
+        self.output_tabs.addTab(self.output_regex_table, "РВ-поиск")
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.editor_tabs)
@@ -891,6 +998,14 @@ class MainWindow(QMainWindow):
         self.toolbar_text.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.addToolBar(self.toolbar_text)
 
+        self.analysis_mode_label = QLabel("Режим:")
+        self.analysis_mode_combo = QComboBox()
+        self.analysis_mode_combo.currentIndexChanged.connect(self.on_analysis_mode_changed)
+        self.refresh_analysis_mode_combo_items()
+
+        self.toolbar_text.addWidget(self.analysis_mode_label)
+        self.toolbar_text.addWidget(self.analysis_mode_combo)
+        self.toolbar_text.addSeparator()
         self.toolbar_text.addAction(self.act_save_as)
         self.toolbar_text.addAction(self.act_exit)
         self.toolbar_text.addSeparator()
@@ -910,6 +1025,49 @@ class MainWindow(QMainWindow):
         self.toolbar_text.addSeparator()
         self.toolbar_text.addAction(self.act_help)
         self.toolbar_text.addAction(self.act_about)
+
+    def refresh_analysis_mode_combo_items(self):
+        current_mode = None
+        if hasattr(self, "analysis_mode_combo"):
+            current_mode = self.analysis_mode_combo.currentData()
+
+        ru_items = [
+            ("Синтаксический анализ (ЛР3)", "parser"),
+            ("РВ 1: SSN", "regex_ssn"),
+            ("РВ 2: Размеры файлов", "regex_filesize"),
+            ("РВ 3: VIN", "regex_vin"),
+        ]
+        en_items = [
+            ("Syntax analysis (Lab 3)", "parser"),
+            ("Regex 1: SSN", "regex_ssn"),
+            ("Regex 2: File sizes", "regex_filesize"),
+            ("Regex 3: VIN", "regex_vin"),
+        ]
+        items = en_items if self.lang == "en" else ru_items
+
+        self.analysis_mode_combo.blockSignals(True)
+        self.analysis_mode_combo.clear()
+        for text, mode in items:
+            self.analysis_mode_combo.addItem(text, mode)
+
+        target_index = self.analysis_mode_combo.findData(current_mode)
+        if target_index < 0:
+            target_index = 0
+        self.analysis_mode_combo.setCurrentIndex(target_index)
+        self.analysis_mode_combo.blockSignals(False)
+
+    def current_analysis_mode(self):
+        mode = self.analysis_mode_combo.currentData()
+        if not mode:
+            return "parser"
+        return mode
+
+    def on_analysis_mode_changed(self, _index):
+        mode = self.current_analysis_mode()
+        if self.lang == "en":
+            self.statusBar().showMessage(f"Mode: {mode}", 1500)
+        else:
+            self.statusBar().showMessage(f"Режим: {mode}", 1500)
 
     def create_editor_tab(self, text="", file_path=None, make_current=True):
         editor = CodeEditor()
@@ -1156,6 +1314,8 @@ class MainWindow(QMainWindow):
         self.output_table.horizontalHeader().setFont(font)
         self.output_syntax_table.setFont(font)
         self.output_syntax_table.horizontalHeader().setFont(font)
+        self.output_regex_table.setFont(font)
+        self.output_regex_table.horizontalHeader().setFont(font)
 
     def show_text_topic(self, title):
         sender = self.sender()
@@ -1175,17 +1335,28 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def run_analysis(self):
+        mode = self.current_analysis_mode()
+        if mode.startswith("regex_"):
+            self.run_regex_analysis(mode)
+            return
+        self.run_parser_analysis()
+
+    def run_parser_analysis(self):
         editor = self.current_editor()
         if not editor:
             return
         text = editor.toPlainText()
 
         lexemes = LexicalAnalyzer().analyze(text)
-        syntax_issues = SyntaxAnalyzer().analyze(lexemes)
+        lexical_errors = [token for token in lexemes if token.is_error]
+        if lexical_errors:
+            syntax_issues = []
+        else:
+            syntax_issues = SyntaxAnalyzer().analyze(lexemes)
         self.fill_result_table(lexemes)
         self.fill_syntax_table(syntax_issues)
+        self.fill_regex_table([])
 
-        lexical_errors = [token for token in lexemes if token.is_error]
         syntax_errors = len(syntax_issues)
         total_errors = len(lexical_errors) + syntax_errors
         if self.lang == "en":
@@ -1205,6 +1376,7 @@ class MainWindow(QMainWindow):
                 for token in lexical_errors:
                     report.append(f"L{token.line}:C{token.start_col} {token.message}")
                 report.append("")
+                report.append("Syntax analysis skipped until lexical errors are fixed.")
             if syntax_issues:
                 report.append("Syntax errors:")
                 for issue in syntax_issues:
@@ -1228,6 +1400,7 @@ class MainWindow(QMainWindow):
                 for token in lexical_errors:
                     report.append(f"L{token.line}:C{token.start_col} {token.message}")
                 report.append("")
+                report.append("Синтаксический разбор пропущен до исправления лексических ошибок.")
             if syntax_issues:
                 report.append("Синтаксические ошибки:")
                 for issue in syntax_issues:
@@ -1243,6 +1416,64 @@ class MainWindow(QMainWindow):
         else:
             self.output_tabs.setCurrentWidget(self.output_text)
         status = "Analysis complete" if self.lang == "en" else "Анализ завершен"
+        self.statusBar().showMessage(status, 2000)
+
+    def run_regex_analysis(self, mode):
+        editor = self.current_editor()
+        if not editor:
+            return
+
+        text = editor.toPlainText()
+        self.fill_result_table([])
+        self.fill_syntax_table([])
+
+        task_key = mode.replace("regex_", "", 1)
+        title = self.regex_engine.task_title(task_key, self.lang)
+        pattern = self.regex_engine.task_pattern(task_key)
+
+        if not text:
+            self.fill_regex_table([])
+            if self.lang == "en":
+                self.output_text.setPlainText(
+                    "Regular expression search\n"
+                    f"Task: {title}\n"
+                    "No data for search."
+                )
+            else:
+                self.output_text.setPlainText(
+                    "Поиск по регулярному выражению\n"
+                    f"Задание: {title}\n"
+                    "Нет данных для поиска."
+                )
+            self.output_tabs.setCurrentWidget(self.output_text)
+            return
+
+        hits = self.regex_engine.find(task_key, text)
+        line_starts = self.build_line_starts(text)
+        rows = []
+        for hit in hits:
+            line, col = self.offset_to_line_col(line_starts, hit.start)
+            rows.append((hit.value, line, col, hit.length, hit.start))
+
+        self.fill_regex_table(rows)
+
+        if self.lang == "en":
+            report = [
+                "Regular expression search result",
+                f"Task: {title}",
+                f"Pattern: {pattern}",
+                f"Matches found: {len(rows)}",
+            ]
+        else:
+            report = [
+                "Результаты поиска по регулярному выражению",
+                f"Задание: {title}",
+                f"Шаблон: {pattern}",
+                f"Найдено совпадений: {len(rows)}",
+            ]
+        self.output_text.setPlainText("\n".join(report))
+        self.output_tabs.setCurrentWidget(self.output_regex_table)
+        status = "Regex search complete" if self.lang == "en" else "Поиск по РВ завершен"
         self.statusBar().showMessage(status, 2000)
 
     def fill_result_table(self, lexemes):
@@ -1266,6 +1497,21 @@ class MainWindow(QMainWindow):
                 if token.is_error:
                     item.setForeground(QColor("#b00020"))
                 self.output_table.setItem(row, col, item)
+
+    def fill_regex_table(self, rows):
+        self.output_regex_table.setRowCount(0)
+        for row, (value, line, col, length, start_offset) in enumerate(rows):
+            self.output_regex_table.insertRow(row)
+            values = [
+                value,
+                self.format_regex_location(line, col),
+                str(length),
+            ]
+            payload = (start_offset, length, line, col)
+            for idx, cell_value in enumerate(values):
+                item = QTableWidgetItem(cell_value)
+                item.setData(Qt.UserRole, payload)
+                self.output_regex_table.setItem(row, idx, item)
 
     def fill_syntax_table(self, issues):
         self.output_syntax_table.setRowCount(0)
@@ -1311,6 +1557,27 @@ class MainWindow(QMainWindow):
             return f"line {issue.line}, position {issue.col}"
         return f"строка {issue.line}, позиция {issue.col}"
 
+    def format_regex_location(self, line, col):
+        if self.lang == "en":
+            return f"line {line}, position {col}"
+        return f"строка {line}, позиция {col}"
+
+    @staticmethod
+    def build_line_starts(text):
+        starts = [0]
+        for idx, ch in enumerate(text):
+            if ch == "\n":
+                starts.append(idx + 1)
+        return starts
+
+    @staticmethod
+    def offset_to_line_col(line_starts, offset):
+        line_idx = bisect_right(line_starts, offset) - 1
+        line_idx = max(0, line_idx)
+        line_no = line_idx + 1
+        col = offset - line_starts[line_idx] + 1
+        return line_no, col
+
     def handle_result_row_click(self, row, _col):
         item = self.output_table.item(row, 0)
         if not item:
@@ -1333,6 +1600,20 @@ class MainWindow(QMainWindow):
         line, col = payload
         self.go_to_position(line, col)
 
+    def handle_regex_row_click(self, row, _col):
+        item = self.output_regex_table.item(row, 0)
+        if not item:
+            return
+        payload = item.data(Qt.UserRole)
+        if not payload or len(payload) != 4:
+            return
+        start_offset, length, line, col = payload
+        self.select_text_range(start_offset, length)
+        if self.lang == "en":
+            self.statusBar().showMessage(f"Selected match at line {line}, column {col}", 2500)
+        else:
+            self.statusBar().showMessage(f"Выделено совпадение: строка {line}, позиция {col}", 2500)
+
     def go_to_position(self, line, col):
         editor = self.current_editor()
         if not editor:
@@ -1350,14 +1631,28 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Курсор установлен: строка {line}, столбец {col}", 2500)
 
+    def select_text_range(self, start_offset, length):
+        editor = self.current_editor()
+        if not editor:
+            return
+        start = max(0, start_offset)
+        end = max(start, start + max(0, length))
+        cursor = editor.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.KeepAnchor)
+        editor.setTextCursor(cursor)
+        editor.centerCursor()
+        editor.setFocus()
+
     def show_help(self):
         if self.lang == "en":
             text = (
                 "File: new, open, save, save as, exit.\n"
                 "Edit: undo/redo, cut/copy/paste, delete, select all.\n"
                 "Text: study materials and program source code.\n"
-                "Run: lexical + syntax analysis for Elixir tuple declaration (F5).\n"
-                "Each declaration line must end with ';'.\n"
+                "Run: use the mode selector.\n"
+                "- Syntax mode: lexical + syntax analysis for Elixir tuple declaration (each line ends with ';').\n"
+                "- Regex mode: SSN, file size, or VIN search.\n"
                 "Help: function description and about dialog."
             )
             QMessageBox.information(self, "Help", text)
@@ -1366,17 +1661,18 @@ class MainWindow(QMainWindow):
             "Файл: создать, открыть, сохранить, сохранить как, выход.\n"
             "Правка: отмена/повтор, вырезать/копировать/вставить, удалить, выделить все.\n"
             "Текст: учебные материалы и исходный код программы.\n"
-            "Пуск: запуск лексического и синтаксического анализатора объявления кортежа Elixir (F5).\n"
-            "Каждая строка объявления должна заканчиваться ';'.\n"
+            "Пуск: запуск выбранного режима анализа.\n"
+            "- Режим 'Синтаксический анализ': лексика + синтаксис объявления кортежа Elixir (каждая строка с ';').\n"
+            "- Режимы РВ: поиск SSN, размеров файлов и VIN.\n"
             "Справка: описание функций и окно о программе."
         )
         QMessageBox.information(self, "Справка", text)
 
     def show_about(self):
         if self.lang == "en":
-            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 3.")
+            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 4.")
             return
-        QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 3.")
+        QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 4.")
 
     def update_cursor_status(self):
         editor = self.current_editor()
@@ -1457,6 +1753,7 @@ class MainWindow(QMainWindow):
             "menu_view": "Вид",
             "tb_quick": "Быстрые команды",
             "tb_tools": "Инструменты",
+            "analysis_mode_label": "Режим:",
             "new": "Новый",
             "open": "Открыть...",
             "save": "Сохранить",
@@ -1486,6 +1783,7 @@ class MainWindow(QMainWindow):
             "output_result": "Результат",
             "output_tokens": "Лексемы",
             "output_syntax": "Синтаксис",
+            "output_regex": "РВ-поиск",
             "output_placeholder": "Результаты анализа будут отображаться здесь",
             "token_col_code": "Код",
             "token_col_type": "Тип лексемы",
@@ -1494,6 +1792,9 @@ class MainWindow(QMainWindow):
             "syntax_col_fragment": "Неверный фрагмент",
             "syntax_col_location": "Местоположение",
             "syntax_col_description": "Описание",
+            "regex_col_value": "Найденная подстрока",
+            "regex_col_location": "Начальная позиция",
+            "regex_col_length": "Длина",
         }
         en = {
             "menu_file": "File",
@@ -1504,6 +1805,7 @@ class MainWindow(QMainWindow):
             "menu_view": "View",
             "tb_quick": "Quick Actions",
             "tb_tools": "Tools",
+            "analysis_mode_label": "Mode:",
             "new": "New",
             "open": "Open...",
             "save": "Save",
@@ -1533,6 +1835,7 @@ class MainWindow(QMainWindow):
             "output_result": "Result",
             "output_tokens": "Tokens",
             "output_syntax": "Syntax",
+            "output_regex": "Regex Search",
             "output_placeholder": "Analysis results will be shown here",
             "token_col_code": "Code",
             "token_col_type": "Token Type",
@@ -1541,6 +1844,9 @@ class MainWindow(QMainWindow):
             "syntax_col_fragment": "Invalid Fragment",
             "syntax_col_location": "Location",
             "syntax_col_description": "Description",
+            "regex_col_value": "Matched Substring",
+            "regex_col_location": "Start Position",
+            "regex_col_length": "Length",
         }
         t = ru if self.lang == "ru" else en
 
@@ -1553,6 +1859,8 @@ class MainWindow(QMainWindow):
 
         self.toolbar_icons.setWindowTitle(t["tb_quick"])
         self.toolbar_text.setWindowTitle(t["tb_tools"])
+        self.analysis_mode_label.setText(t["analysis_mode_label"])
+        self.refresh_analysis_mode_combo_items()
 
         self.act_new.setText(t["new"])
         self.act_open.setText(t["open"])
@@ -1587,6 +1895,7 @@ class MainWindow(QMainWindow):
         self.output_tabs.setTabText(0, t["output_result"])
         self.output_tabs.setTabText(1, t["output_tokens"])
         self.output_tabs.setTabText(2, t["output_syntax"])
+        self.output_tabs.setTabText(3, t["output_regex"])
         self.output_text.setPlaceholderText(t["output_placeholder"])
         self.output_table.setHorizontalHeaderLabels(
             [
@@ -1601,6 +1910,13 @@ class MainWindow(QMainWindow):
                 t["syntax_col_fragment"],
                 t["syntax_col_location"],
                 t["syntax_col_description"],
+            ]
+        )
+        self.output_regex_table.setHorizontalHeaderLabels(
+            [
+                t["regex_col_value"],
+                t["regex_col_location"],
+                t["regex_col_length"],
             ]
         )
 
