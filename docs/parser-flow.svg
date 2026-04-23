@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760">
+  <defs>
+    <style>
+      .bg { fill: #101418; }
+      .box { fill: #1b2430; stroke: #d9e1ea; stroke-width: 2; rx: 12; }
+      .title { fill: #f4f7fb; font: 700 30px Arial, sans-serif; }
+      .txt { fill: #f4f7fb; font: 24px Arial, sans-serif; }
+      .arrow { stroke: #d9e1ea; stroke-width: 2; fill: none; marker-end: url(#a); }
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d9e1ea"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1280" height="760"/>
+  <text class="title" x="30" y="50">ЛР3: Схема синтаксического анализа (рекурсивный спуск + нейтрализация)</text>
+
+  <rect class="box" x="60" y="120" width="260" height="90"/>
+  <text class="txt" x="105" y="175">Старт / Лексемы</text>
+
+  <rect class="box" x="390" y="120" width="280" height="90"/>
+  <text class="txt" x="470" y="175">parse_program</text>
+
+  <rect class="box" x="740" y="120" width="320" height="90"/>
+  <text class="txt" x="835" y="175">parse_statement</text>
+
+  <rect class="box" x="180" y="300" width="290" height="100"/>
+  <text class="txt" x="220" y="355">ID = tuple ; ?</text>
+
+  <rect class="box" x="530" y="300" width="290" height="100"/>
+  <text class="txt" x="565" y="355">parse_tuple { ... }</text>
+
+  <rect class="box" x="880" y="300" width="320" height="100"/>
+  <text class="txt" x="915" y="355">Синхронизация (Айронс)</text>
+
+  <rect class="box" x="260" y="520" width="320" height="100"/>
+  <text class="txt" x="305" y="575">Ошибки в таблицу</text>
+
+  <rect class="box" x="700" y="520" width="320" height="100"/>
+  <text class="txt" x="765" y="575">Следующее выражение</text>
+
+  <path class="arrow" d="M320 165 L390 165"/>
+  <path class="arrow" d="M670 165 L740 165"/>
+  <path class="arrow" d="M900 210 L900 300"/>
+  <path class="arrow" d="M740 355 L470 355"/>
+  <path class="arrow" d="M325 400 L325 520"/>
+  <path class="arrow" d="M820 355 L880 355"/>
+  <path class="arrow" d="M1040 400 L1040 520"/>
+  <path class="arrow" d="M580 570 L700 570"/>
+  <path class="arrow" d="M860 520 L860 400"/>
+</svg>

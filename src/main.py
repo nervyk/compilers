@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
+    QTreeWidget,
+    QTreeWidgetItem,
     QStyle,
     QVBoxLayout,
     QWidget,
@@ -471,6 +473,468 @@ class SyntaxAnalyzer:
 
 
 @dataclass
+class ProgramNode:
+    statements: list
+
+
+@dataclass
+class StatementNode:
+    name: str
+    value: "TupleNode"
+    line: int
+    col: int
+
+
+@dataclass
+class TupleNode:
+    elements: list
+    line: int
+    col: int
+
+
+@dataclass
+class AtomNode:
+    value: str
+    line: int
+    col: int
+
+
+@dataclass
+class IntegerNode:
+    value: int
+    line: int
+    col: int
+
+
+@dataclass
+class StringNode:
+    value: str
+    line: int
+    col: int
+
+
+@dataclass
+class IdentifierNode:
+    name: str
+    line: int
+    col: int
+
+
+@dataclass
+class AstParseIssue:
+    fragment: str
+    line: int
+    col: int
+    description: str
+
+
+@dataclass
+class SemanticIssue:
+    fragment: str
+    line: int
+    col: int
+    description: str
+
+
+class AstBuilder:
+    CODE_INTEGER = 1
+    CODE_IDENTIFIER = 2
+    CODE_ATOM = 3
+    CODE_STRING = 4
+    CODE_ASSIGN = 10
+    CODE_COMMA = 11
+    CODE_TUPLE_OPEN = 12
+    CODE_TUPLE_CLOSE = 13
+    CODE_WHITESPACE = 14
+    CODE_NEWLINE = 15
+    CODE_SEMICOLON = 16
+
+    def build(self, lexemes):
+        self.tokens = [token for token in lexemes if token.code != self.CODE_WHITESPACE and not token.is_error]
+        self.index = 0
+        self.issues = []
+        self.seen = set()
+
+        program = ProgramNode(statements=[])
+        self._skip_newlines()
+        while not self._at_end():
+            statement = self._parse_statement()
+            if statement is not None:
+                program.statements.append(statement)
+            self._skip_newlines()
+
+        return program, self.issues
+
+    def _parse_statement(self):
+        name_token = self._expect(self.CODE_IDENTIFIER, "Ожидался идентификатор в начале объявления")
+        if name_token is None:
+            self._synchronize({self.CODE_NEWLINE, self.CODE_IDENTIFIER})
+            if self._code() == self.CODE_NEWLINE:
+                self._advance()
+            return None
+
+        if self._code() != self.CODE_ASSIGN:
+            self._add_issue(self._current(), "Ожидался оператор '=' после идентификатора")
+        else:
+            self._advance()
+
+        tuple_node = self._parse_tuple()
+
+        if self._code() == self.CODE_SEMICOLON:
+            self._advance()
+        else:
+            self._add_issue(self._current(), "Ожидался ';' в конце объявления")
+            self._synchronize({self.CODE_SEMICOLON, self.CODE_NEWLINE, self.CODE_IDENTIFIER})
+            if self._code() == self.CODE_SEMICOLON:
+                self._advance()
+
+        if tuple_node is None:
+            return None
+
+        return StatementNode(
+            name=name_token.lexeme,
+            value=tuple_node,
+            line=name_token.line,
+            col=name_token.start_col,
+        )
+
+    def _parse_tuple(self):
+        open_token = self._expect(self.CODE_TUPLE_OPEN, "Ожидалась '{' для начала кортежа")
+        if open_token is None:
+            return None
+
+        tuple_node = TupleNode(elements=[], line=open_token.line, col=open_token.start_col)
+
+        if self._code() == self.CODE_TUPLE_CLOSE:
+            self._advance()
+            return tuple_node
+
+        expect_value = True
+        while not self._at_end():
+            code = self._code()
+            token = self._current()
+
+            if code == self.CODE_NEWLINE:
+                self._add_issue(token, "Ожидалась '}' до конца строки")
+                break
+
+            if expect_value:
+                if code == self.CODE_COMMA:
+                    self._add_issue(token, "Пропущено значение кортежа перед запятой")
+                    self._advance()
+                    continue
+                if code == self.CODE_TUPLE_CLOSE:
+                    self._add_issue(token, "Пропущено значение кортежа перед '}'")
+                    self._advance()
+                    return tuple_node
+
+                value_node = self._parse_value()
+                if value_node is not None:
+                    tuple_node.elements.append(value_node)
+                    expect_value = False
+                    continue
+
+                self._synchronize({self.CODE_COMMA, self.CODE_TUPLE_CLOSE, self.CODE_NEWLINE})
+                if self._code() == self.CODE_COMMA:
+                    self._advance()
+                    expect_value = True
+                    continue
+                if self._code() == self.CODE_TUPLE_CLOSE:
+                    self._advance()
+                    return tuple_node
+                break
+
+            if code == self.CODE_COMMA:
+                self._advance()
+                expect_value = True
+                continue
+            if code == self.CODE_TUPLE_CLOSE:
+                self._advance()
+                return tuple_node
+            if self._is_value_start(token):
+                self._add_issue(token, "Ожидалась ',' между элементами кортежа")
+                expect_value = True
+                continue
+
+            self._add_issue(token, "Ожидалась ',' или '}'")
+            self._synchronize({self.CODE_COMMA, self.CODE_TUPLE_CLOSE, self.CODE_NEWLINE})
+            if self._code() == self.CODE_COMMA:
+                self._advance()
+                expect_value = True
+                continue
+            if self._code() == self.CODE_TUPLE_CLOSE:
+                self._advance()
+                return tuple_node
+            break
+
+        if self._code() == self.CODE_TUPLE_CLOSE:
+            self._advance()
+        else:
+            self._add_issue(self._current(), "Ожидалась '}' в конце кортежа")
+        return tuple_node
+
+    def _parse_value(self):
+        token = self._current()
+        code = self._code()
+        if token is None:
+            self._add_issue(None, "Ожидалось значение кортежа")
+            return None
+        if code == self.CODE_IDENTIFIER:
+            self._advance()
+            return IdentifierNode(name=token.lexeme, line=token.line, col=token.start_col)
+        if code == self.CODE_ATOM:
+            self._advance()
+            return AtomNode(value=token.lexeme, line=token.line, col=token.start_col)
+        if code == self.CODE_INTEGER:
+            self._advance()
+            try:
+                value = int(token.lexeme)
+            except ValueError:
+                value = 0
+            return IntegerNode(value=value, line=token.line, col=token.start_col)
+        if code == self.CODE_STRING:
+            self._advance()
+            return StringNode(value=token.lexeme, line=token.line, col=token.start_col)
+        if code == self.CODE_TUPLE_OPEN:
+            return self._parse_tuple()
+
+        self._add_issue(token, "Ожидалось значение кортежа")
+        if not self._at_end():
+            self._advance()
+        return None
+
+    def _expect(self, expected_code, error_text):
+        token = self._current()
+        if self._code() == expected_code:
+            self._advance()
+            return token
+        self._add_issue(token, error_text)
+        return None
+
+    def _is_value_start(self, token):
+        if not token:
+            return False
+        return token.code in {
+            self.CODE_IDENTIFIER,
+            self.CODE_ATOM,
+            self.CODE_INTEGER,
+            self.CODE_STRING,
+            self.CODE_TUPLE_OPEN,
+        }
+
+    def _add_issue(self, token, description):
+        if token is None:
+            if self.tokens:
+                last = self.tokens[-1]
+                line = last.line
+                col = last.end_col
+                fragment = "EOF"
+            else:
+                line = 1
+                col = 1
+                fragment = "(пусто)"
+        else:
+            line = token.line
+            col = token.start_col
+            fragment = self._format_fragment(token)
+
+        key = (line, col, description)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        self.issues.append(AstParseIssue(fragment=fragment, line=line, col=col, description=description))
+
+    def _format_fragment(self, token):
+        if token.code == self.CODE_NEWLINE:
+            return "\\n"
+        return token.lexeme.replace("\n", "\\n").replace("\t", "\\t") or "(пусто)"
+
+    def _synchronize(self, sync_codes):
+        while not self._at_end() and self._code() not in sync_codes:
+            self._advance()
+
+    def _skip_newlines(self):
+        while self._code() == self.CODE_NEWLINE:
+            self._advance()
+
+    def _current(self):
+        if self.index >= len(self.tokens):
+            return None
+        return self.tokens[self.index]
+
+    def _code(self):
+        token = self._current()
+        if token is None:
+            return None
+        return token.code
+
+    def _at_end(self):
+        return self.index >= len(self.tokens)
+
+    def _advance(self):
+        if not self._at_end():
+            self.index += 1
+
+
+@dataclass
+class SymbolInfo:
+    name: str
+    symbol_type: str
+    line: int
+    col: int
+
+
+class SymbolTable:
+    def __init__(self):
+        self._items = {}
+
+    def declare(self, symbol):
+        existing = self._items.get(symbol.name)
+        if existing is not None:
+            return False, existing
+        self._items[symbol.name] = symbol
+        return True, None
+
+    def lookup(self, name):
+        return self._items.get(name)
+
+
+class SemanticAnalyzer:
+    INT_MIN = 0
+    INT_MAX = 2147483647
+
+    def analyze(self, program):
+        self.errors = []
+        self.seen = set()
+        self.symbols = SymbolTable()
+
+        for statement in program.statements:
+            self._check_statement(statement)
+
+        return self.errors
+
+    def _check_statement(self, statement):
+        existing = self.symbols.lookup(statement.name)
+        if existing is not None:
+            self._add_issue(
+                statement.name,
+                statement.line,
+                statement.col,
+                f"идентификатор '{statement.name}' уже объявлен ранее (строка {existing.line})",
+            )
+
+        if not isinstance(statement.value, TupleNode):
+            self._add_issue(
+                statement.name,
+                statement.line,
+                statement.col,
+                "тип инициализатора несовместим с типом объявления (ожидался Tuple)",
+            )
+
+        self._check_expr(statement.value)
+
+        if existing is None:
+            self.symbols.declare(
+                SymbolInfo(
+                    name=statement.name,
+                    symbol_type="Tuple",
+                    line=statement.line,
+                    col=statement.col,
+                )
+            )
+
+    def _check_expr(self, node):
+        if isinstance(node, TupleNode):
+            for child in node.elements:
+                self._check_expr(child)
+            return
+
+        if isinstance(node, IntegerNode):
+            if node.value < self.INT_MIN or node.value > self.INT_MAX:
+                self._add_issue(
+                    str(node.value),
+                    node.line,
+                    node.col,
+                    f"число выходит за допустимый диапазон [{self.INT_MIN}..{self.INT_MAX}]",
+                )
+            return
+
+        if isinstance(node, IdentifierNode):
+            symbol = self.symbols.lookup(node.name)
+            if symbol is None:
+                self._add_issue(
+                    node.name,
+                    node.line,
+                    node.col,
+                    f"идентификатор '{node.name}' используется до объявления",
+                )
+                return
+            if symbol.symbol_type != "Tuple":
+                self._add_issue(
+                    node.name,
+                    node.line,
+                    node.col,
+                    f"несовместимость типов: ожидался Tuple, получен {symbol.symbol_type}",
+                )
+
+    def _add_issue(self, fragment, line, col, description):
+        key = (line, col, description)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        self.errors.append(SemanticIssue(fragment=fragment, line=line, col=col, description=description))
+
+
+class AstFormatter:
+    def format_tree(self, program):
+        lines = ["ProgramNode"]
+        if not program.statements:
+            lines.append("└── (пусто)")
+            return "\n".join(lines)
+
+        for idx, statement in enumerate(program.statements):
+            is_last_stmt = idx == len(program.statements) - 1
+            stmt_branch = "└── " if is_last_stmt else "├── "
+            stmt_indent = "    " if is_last_stmt else "│   "
+            lines.append(f"{stmt_branch}StatementNode")
+            lines.append(f"{stmt_indent}├── name: \"{statement.name}\"")
+            lines.append(f"{stmt_indent}└── value: Tuple")
+            self._append_tuple(lines, statement.value, stmt_indent + "    ")
+        return "\n".join(lines)
+
+    def _append_tuple(self, lines, tuple_node, indent):
+        lines.append(f"{indent}├── node: :{{}}")
+        lines.append(f"{indent}├── meta: []")
+        lines.append(f"{indent}└── args")
+
+        args_indent = indent + "    "
+        if not tuple_node.elements:
+            lines.append(f"{args_indent}└── (пусто)")
+            return
+
+        for idx, element in enumerate(tuple_node.elements):
+            is_last = idx == len(tuple_node.elements) - 1
+            branch = "└── " if is_last else "├── "
+            child_indent = args_indent + ("    " if is_last else "│   ")
+
+            if isinstance(element, TupleNode):
+                lines.append(f"{args_indent}{branch}Tuple")
+                self._append_tuple(lines, element, child_indent)
+                continue
+
+            if isinstance(element, AtomNode):
+                lines.append(f"{args_indent}{branch}{element.value}")
+            elif isinstance(element, IntegerNode):
+                lines.append(f"{args_indent}{branch}{element.value}")
+            elif isinstance(element, StringNode):
+                lines.append(f"{args_indent}{branch}{element.value}")
+            elif isinstance(element, IdentifierNode):
+                lines.append(f"{args_indent}{branch}{element.name}")
+            else:
+                lines.append(f"{args_indent}{branch}(unknown)")
+
+
+@dataclass
 class RegexHit:
     value: str
     start: int
@@ -706,12 +1170,64 @@ class TextInfoDialog(QDialog):
         layout.addWidget(viewer)
 
 
+class AstViewerDialog(QDialog):
+    def __init__(self, program_node, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("AST Viewer")
+        self.resize(700, 520)
+        layout = QVBoxLayout(self)
+
+        tree = QTreeWidget()
+        tree.setHeaderLabel("AST")
+        root = QTreeWidgetItem(["ProgramNode"])
+        tree.addTopLevelItem(root)
+
+        for statement in program_node.statements:
+            stmt_item = QTreeWidgetItem(["StatementNode"])
+            root.addChild(stmt_item)
+            stmt_item.addChild(QTreeWidgetItem([f'name: "{statement.name}"']))
+            value_item = QTreeWidgetItem(["value: Tuple"])
+            stmt_item.addChild(value_item)
+            self._append_tuple(value_item, statement.value)
+
+        tree.expandAll()
+        layout.addWidget(tree)
+
+    def _append_tuple(self, parent_item, tuple_node):
+        tuple_item = QTreeWidgetItem(["Tuple"])
+        parent_item.addChild(tuple_item)
+        tuple_item.addChild(QTreeWidgetItem(["node: :{}"]))
+        tuple_item.addChild(QTreeWidgetItem(["meta: []"]))
+        args_item = QTreeWidgetItem(["args"])
+        tuple_item.addChild(args_item)
+
+        if not tuple_node.elements:
+            args_item.addChild(QTreeWidgetItem(["(пусто)"]))
+            return
+
+        for element in tuple_node.elements:
+            if isinstance(element, TupleNode):
+                self._append_tuple(args_item, element)
+            elif isinstance(element, AtomNode):
+                args_item.addChild(QTreeWidgetItem([element.value]))
+            elif isinstance(element, IntegerNode):
+                args_item.addChild(QTreeWidgetItem([str(element.value)]))
+            elif isinstance(element, StringNode):
+                args_item.addChild(QTreeWidgetItem([element.value]))
+            elif isinstance(element, IdentifierNode):
+                args_item.addChild(QTreeWidgetItem([element.name]))
+            else:
+                args_item.addChild(QTreeWidgetItem(["(unknown)"]))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
         self.lang = "ru"
         self.regex_engine = RegexSearchEngine()
+        self.ast_formatter = AstFormatter()
+        self.last_ast_program = None
         self.untitled_counter = 1
         self.text_topics = {
             "Постановка задачи": (
@@ -786,6 +1302,19 @@ class MainWindow(QMainWindow):
         self.output_syntax_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.output_syntax_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.output_syntax_table.cellClicked.connect(self.handle_syntax_row_click)
+        self.output_semantic_table = QTableWidget(0, 3)
+        self.output_semantic_table.setHorizontalHeaderLabels(["Неверный фрагмент", "Местоположение", "Описание"])
+        self.output_semantic_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.output_semantic_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.output_semantic_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.output_semantic_table.verticalHeader().setVisible(False)
+        self.output_semantic_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.output_semantic_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.output_semantic_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.output_semantic_table.cellClicked.connect(self.handle_semantic_row_click)
+        self.output_ast_text = QTextEdit()
+        self.output_ast_text.setReadOnly(True)
+        self.output_ast_text.setPlaceholderText("AST будет отображаться здесь")
         self.output_regex_table = QTableWidget(0, 3)
         self.output_regex_table.setHorizontalHeaderLabels(["Найденная подстрока", "Начальная позиция", "Длина"])
         self.output_regex_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -799,6 +1328,8 @@ class MainWindow(QMainWindow):
         self.output_tabs.addTab(self.output_text, "Результат")
         self.output_tabs.addTab(self.output_table, "Лексемы")
         self.output_tabs.addTab(self.output_syntax_table, "Синтаксис")
+        self.output_tabs.addTab(self.output_semantic_table, "Семантика")
+        self.output_tabs.addTab(self.output_ast_text, "AST")
         self.output_tabs.addTab(self.output_regex_table, "РВ-поиск")
 
         splitter = QSplitter(Qt.Vertical)
@@ -881,6 +1412,7 @@ class MainWindow(QMainWindow):
         self.act_editor_font_dec = QAction("Шрифт редактора -", self)
         self.act_output_font_inc = QAction("Шрифт вывода +", self)
         self.act_output_font_dec = QAction("Шрифт вывода -", self)
+        self.act_show_ast = QAction("Показать AST", self)
 
         self.act_new.setShortcut(QKeySequence.New)
         self.act_open.setShortcut(QKeySequence.Open)
@@ -900,6 +1432,7 @@ class MainWindow(QMainWindow):
         self.act_editor_font_dec.setShortcut(QKeySequence("Ctrl+-"))
         self.act_output_font_inc.setShortcut(QKeySequence("Ctrl+Shift+="))
         self.act_output_font_dec.setShortcut(QKeySequence("Ctrl+Shift+-"))
+        self.act_show_ast.setShortcut(QKeySequence("F6"))
 
         self.act_new.triggered.connect(self.file_new)
         self.act_open.triggered.connect(self.file_open)
@@ -931,6 +1464,7 @@ class MainWindow(QMainWindow):
         self.act_editor_font_dec.triggered.connect(lambda: self.change_editor_font_size(-1))
         self.act_output_font_inc.triggered.connect(lambda: self.change_output_font_size(1))
         self.act_output_font_dec.triggered.connect(lambda: self.change_output_font_size(-1))
+        self.act_show_ast.triggered.connect(self.show_ast_dialog)
 
     def init_menu(self):
         self.menu_file = self.menuBar().addMenu("Файл")
@@ -961,6 +1495,8 @@ class MainWindow(QMainWindow):
         self.menu_text.addAction(self.act_text_literature)
         self.menu_text.addSeparator()
         self.menu_text.addAction(self.act_text_source)
+        self.menu_text.addSeparator()
+        self.menu_text.addAction(self.act_show_ast)
 
         self.menuBar().addAction(self.act_run)
 
@@ -1022,6 +1558,7 @@ class MainWindow(QMainWindow):
         self.toolbar_text.addAction(self.act_editor_font_dec)
         self.toolbar_text.addAction(self.act_output_font_inc)
         self.toolbar_text.addAction(self.act_output_font_dec)
+        self.toolbar_text.addAction(self.act_show_ast)
         self.toolbar_text.addSeparator()
         self.toolbar_text.addAction(self.act_help)
         self.toolbar_text.addAction(self.act_about)
@@ -1033,12 +1570,14 @@ class MainWindow(QMainWindow):
 
         ru_items = [
             ("Синтаксический анализ (ЛР3)", "parser"),
+            ("Семантический анализ (ЛР5)", "semantic"),
             ("РВ 1: SSN", "regex_ssn"),
             ("РВ 2: Размеры файлов", "regex_filesize"),
             ("РВ 3: VIN", "regex_vin"),
         ]
         en_items = [
             ("Syntax analysis (Lab 3)", "parser"),
+            ("Semantic analysis (Lab 5)", "semantic"),
             ("Regex 1: SSN", "regex_ssn"),
             ("Regex 2: File sizes", "regex_filesize"),
             ("Regex 3: VIN", "regex_vin"),
@@ -1314,6 +1853,9 @@ class MainWindow(QMainWindow):
         self.output_table.horizontalHeader().setFont(font)
         self.output_syntax_table.setFont(font)
         self.output_syntax_table.horizontalHeader().setFont(font)
+        self.output_semantic_table.setFont(font)
+        self.output_semantic_table.horizontalHeader().setFont(font)
+        self.output_ast_text.setFont(font)
         self.output_regex_table.setFont(font)
         self.output_regex_table.horizontalHeader().setFont(font)
 
@@ -1339,6 +1881,9 @@ class MainWindow(QMainWindow):
         if mode.startswith("regex_"):
             self.run_regex_analysis(mode)
             return
+        if mode == "semantic":
+            self.run_semantic_analysis()
+            return
         self.run_parser_analysis()
 
     def run_parser_analysis(self):
@@ -1346,6 +1891,7 @@ class MainWindow(QMainWindow):
         if not editor:
             return
         text = editor.toPlainText()
+        self.last_ast_program = None
 
         lexemes = LexicalAnalyzer().analyze(text)
         lexical_errors = [token for token in lexemes if token.is_error]
@@ -1355,6 +1901,8 @@ class MainWindow(QMainWindow):
             syntax_issues = SyntaxAnalyzer().analyze(lexemes)
         self.fill_result_table(lexemes)
         self.fill_syntax_table(syntax_issues)
+        self.fill_semantic_table([])
+        self.output_ast_text.clear()
         self.fill_regex_table([])
 
         syntax_errors = len(syntax_issues)
@@ -1418,14 +1966,128 @@ class MainWindow(QMainWindow):
         status = "Analysis complete" if self.lang == "en" else "Анализ завершен"
         self.statusBar().showMessage(status, 2000)
 
+    def run_semantic_analysis(self):
+        editor = self.current_editor()
+        if not editor:
+            return
+        text = editor.toPlainText()
+        self.last_ast_program = None
+
+        lexemes = LexicalAnalyzer().analyze(text)
+        lexical_errors = [token for token in lexemes if token.is_error]
+        syntax_issues = [] if lexical_errors else SyntaxAnalyzer().analyze(lexemes)
+        ast_issues = []
+        semantic_issues = []
+        ast_tree = None
+
+        if not lexical_errors and not syntax_issues:
+            ast_tree, ast_issues = AstBuilder().build(lexemes)
+            if not ast_issues and ast_tree is not None:
+                semantic_issues = SemanticAnalyzer().analyze(ast_tree)
+                self.last_ast_program = ast_tree
+
+        combined_syntax_issues = list(syntax_issues) + list(ast_issues)
+
+        self.fill_result_table(lexemes)
+        self.fill_syntax_table(combined_syntax_issues)
+        self.fill_semantic_table(semantic_issues)
+        self.fill_regex_table([])
+
+        if ast_tree is not None and not ast_issues:
+            self.output_ast_text.setPlainText(self.ast_formatter.format_tree(ast_tree))
+        else:
+            self.output_ast_text.clear()
+
+        syntax_error_count = len(combined_syntax_issues)
+        semantic_error_count = len(semantic_issues)
+        total_errors = len(lexical_errors) + syntax_error_count + semantic_error_count
+
+        if self.lang == "en":
+            lines_count = text.count("\n") + 1 if text else 0
+            report = [
+                "Lexical + syntax + semantic analysis result",
+                f"Lines: {lines_count}",
+                f"Characters: {len(text)}",
+                f"Lexemes: {len(lexemes)}",
+                f"Lexical errors: {len(lexical_errors)}",
+                f"Syntax errors: {syntax_error_count}",
+                f"Semantic errors: {semantic_error_count}",
+                f"Total errors: {total_errors}",
+                "",
+            ]
+            if lexical_errors:
+                report.append("Lexical errors:")
+                for token in lexical_errors:
+                    report.append(f"L{token.line}:C{token.start_col} {token.message}")
+                report.append("")
+                report.append("Syntax and semantic analysis skipped until lexical errors are fixed.")
+            elif syntax_error_count:
+                report.append("Syntax errors:")
+                for issue in combined_syntax_issues:
+                    report.append(f"L{issue.line}:C{issue.col} {issue.description}")
+                report.append("")
+                report.append("Semantic analysis skipped until syntax errors are fixed.")
+            elif semantic_issues:
+                report.append("Semantic errors:")
+                for issue in semantic_issues:
+                    report.append(f"L{issue.line}:C{issue.col} {issue.description}")
+            else:
+                report.append("No errors found.")
+        else:
+            lines_count = text.count("\n") + 1 if text else 0
+            report = [
+                "Результаты лексического, синтаксического и семантического анализа",
+                f"Строк: {lines_count}",
+                f"Символов: {len(text)}",
+                f"Лексем: {len(lexemes)}",
+                f"Лексических ошибок: {len(lexical_errors)}",
+                f"Синтаксических ошибок: {syntax_error_count}",
+                f"Семантических ошибок: {semantic_error_count}",
+                f"Общее количество ошибок: {total_errors}",
+                "",
+            ]
+            if lexical_errors:
+                report.append("Лексические ошибки:")
+                for token in lexical_errors:
+                    report.append(f"L{token.line}:C{token.start_col} {token.message}")
+                report.append("")
+                report.append("Синтаксический и семантический разбор пропущены до исправления лексических ошибок.")
+            elif syntax_error_count:
+                report.append("Синтаксические ошибки:")
+                for issue in combined_syntax_issues:
+                    report.append(f"L{issue.line}:C{issue.col} {issue.description}")
+                report.append("")
+                report.append("Семантический разбор пропущен до исправления синтаксических ошибок.")
+            elif semantic_issues:
+                report.append("Семантические ошибки:")
+                for issue in semantic_issues:
+                    report.append(f"L{issue.line}:C{issue.col} {issue.description}")
+            else:
+                report.append("Ошибок не найдено.")
+
+        self.output_text.setPlainText("\n".join(report))
+        if lexical_errors:
+            self.output_tabs.setCurrentWidget(self.output_table)
+        elif syntax_error_count:
+            self.output_tabs.setCurrentWidget(self.output_syntax_table)
+        elif semantic_error_count:
+            self.output_tabs.setCurrentWidget(self.output_semantic_table)
+        else:
+            self.output_tabs.setCurrentWidget(self.output_ast_text)
+        status = "Semantic analysis complete" if self.lang == "en" else "Семантический анализ завершен"
+        self.statusBar().showMessage(status, 2000)
+
     def run_regex_analysis(self, mode):
         editor = self.current_editor()
         if not editor:
             return
 
         text = editor.toPlainText()
+        self.last_ast_program = None
         self.fill_result_table([])
         self.fill_syntax_table([])
+        self.fill_semantic_table([])
+        self.output_ast_text.clear()
 
         task_key = mode.replace("regex_", "", 1)
         title = self.regex_engine.task_title(task_key, self.lang)
@@ -1449,6 +2111,11 @@ class MainWindow(QMainWindow):
             return
 
         hits = self.regex_engine.find(task_key, text)
+        all_counts = {
+            "ssn": len(self.regex_engine.find("ssn", text)),
+            "filesize": len(self.regex_engine.find("filesize", text)),
+            "vin": len(self.regex_engine.find("vin", text)),
+        }
         line_starts = self.build_line_starts(text)
         rows = []
         for hit in hits:
@@ -1463,6 +2130,11 @@ class MainWindow(QMainWindow):
                 f"Task: {title}",
                 f"Pattern: {pattern}",
                 f"Matches found: {len(rows)}",
+                "",
+                "Counts by all tasks:",
+                f"SSN: {all_counts['ssn']}",
+                f"File sizes: {all_counts['filesize']}",
+                f"VIN: {all_counts['vin']}",
             ]
         else:
             report = [
@@ -1470,6 +2142,11 @@ class MainWindow(QMainWindow):
                 f"Задание: {title}",
                 f"Шаблон: {pattern}",
                 f"Найдено совпадений: {len(rows)}",
+                "",
+                "Количество совпадений по всем пунктам:",
+                f"SSN: {all_counts['ssn']}",
+                f"Память (размеры файлов): {all_counts['filesize']}",
+                f"VIN: {all_counts['vin']}",
             ]
         self.output_text.setPlainText("\n".join(report))
         self.output_tabs.setCurrentWidget(self.output_regex_table)
@@ -1528,6 +2205,22 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.UserRole, payload)
                 item.setForeground(QColor("#b00020"))
                 self.output_syntax_table.setItem(row, col, item)
+
+    def fill_semantic_table(self, issues):
+        self.output_semantic_table.setRowCount(0)
+        for row, issue in enumerate(issues):
+            self.output_semantic_table.insertRow(row)
+            values = [
+                issue.fragment,
+                self.format_syntax_location(issue),
+                issue.description,
+            ]
+            payload = (issue.line, issue.col)
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, payload)
+                item.setForeground(QColor("#b00020"))
+                self.output_semantic_table.setItem(row, col, item)
 
     def format_lexeme_for_table(self, lexeme):
         if lexeme == "\n":
@@ -1600,6 +2293,16 @@ class MainWindow(QMainWindow):
         line, col = payload
         self.go_to_position(line, col)
 
+    def handle_semantic_row_click(self, row, _col):
+        item = self.output_semantic_table.item(row, 0)
+        if not item:
+            return
+        payload = item.data(Qt.UserRole)
+        if not payload or len(payload) != 2:
+            return
+        line, col = payload
+        self.go_to_position(line, col)
+
     def handle_regex_row_click(self, row, _col):
         item = self.output_regex_table.item(row, 0)
         if not item:
@@ -1644,6 +2347,16 @@ class MainWindow(QMainWindow):
         editor.centerCursor()
         editor.setFocus()
 
+    def show_ast_dialog(self):
+        if self.last_ast_program is None:
+            if self.lang == "en":
+                QMessageBox.information(self, "AST", "No AST available. Run semantic analysis first.")
+            else:
+                QMessageBox.information(self, "AST", "AST пока недоступно. Сначала выполните семантический анализ.")
+            return
+        dialog = AstViewerDialog(self.last_ast_program, self)
+        dialog.exec()
+
     def show_help(self):
         if self.lang == "en":
             text = (
@@ -1652,7 +2365,9 @@ class MainWindow(QMainWindow):
                 "Text: study materials and program source code.\n"
                 "Run: use the mode selector.\n"
                 "- Syntax mode: lexical + syntax analysis for Elixir tuple declaration (each line ends with ';').\n"
+                "- Semantic mode: builds AST and checks semantic rules.\n"
                 "- Regex mode: SSN, file size, or VIN search.\n"
+                "F6 / 'Show AST': opens AST tree window after semantic analysis.\n"
                 "Help: function description and about dialog."
             )
             QMessageBox.information(self, "Help", text)
@@ -1663,16 +2378,18 @@ class MainWindow(QMainWindow):
             "Текст: учебные материалы и исходный код программы.\n"
             "Пуск: запуск выбранного режима анализа.\n"
             "- Режим 'Синтаксический анализ': лексика + синтаксис объявления кортежа Elixir (каждая строка с ';').\n"
+            "- Режим 'Семантический анализ': построение AST и проверка семантических правил.\n"
             "- Режимы РВ: поиск SSN, размеров файлов и VIN.\n"
+            "F6 / 'Показать AST': открыть окно дерева AST после семантического анализа.\n"
             "Справка: описание функций и окно о программе."
         )
         QMessageBox.information(self, "Справка", text)
 
     def show_about(self):
         if self.lang == "en":
-            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 4.")
+            QMessageBox.information(self, "About", "GUI for a language processor. Lab work 5.")
             return
-        QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 4.")
+        QMessageBox.information(self, "О программе", "GUI для языкового процессора. Лабораторная работа 5.")
 
     def update_cursor_status(self):
         editor = self.current_editor()
@@ -1773,6 +2490,7 @@ class MainWindow(QMainWindow):
             "editor_font_dec": "Шрифт редактора -",
             "output_font_inc": "Шрифт вывода +",
             "output_font_dec": "Шрифт вывода -",
+            "show_ast": "Показать AST",
             "topic_task": "Постановка задачи",
             "topic_grammar": "Грамматика",
             "topic_classification": "Классификация грамматики",
@@ -1783,8 +2501,11 @@ class MainWindow(QMainWindow):
             "output_result": "Результат",
             "output_tokens": "Лексемы",
             "output_syntax": "Синтаксис",
+            "output_semantic": "Семантика",
+            "output_ast": "AST",
             "output_regex": "РВ-поиск",
             "output_placeholder": "Результаты анализа будут отображаться здесь",
+            "ast_placeholder": "AST будет отображаться здесь",
             "token_col_code": "Код",
             "token_col_type": "Тип лексемы",
             "token_col_lexeme": "Лексема",
@@ -1792,6 +2513,9 @@ class MainWindow(QMainWindow):
             "syntax_col_fragment": "Неверный фрагмент",
             "syntax_col_location": "Местоположение",
             "syntax_col_description": "Описание",
+            "semantic_col_fragment": "Неверный фрагмент",
+            "semantic_col_location": "Местоположение",
+            "semantic_col_description": "Описание",
             "regex_col_value": "Найденная подстрока",
             "regex_col_location": "Начальная позиция",
             "regex_col_length": "Длина",
@@ -1825,6 +2549,7 @@ class MainWindow(QMainWindow):
             "editor_font_dec": "Editor Font -",
             "output_font_inc": "Output Font +",
             "output_font_dec": "Output Font -",
+            "show_ast": "Show AST",
             "topic_task": "Problem Statement",
             "topic_grammar": "Grammar",
             "topic_classification": "Grammar Classification",
@@ -1835,8 +2560,11 @@ class MainWindow(QMainWindow):
             "output_result": "Result",
             "output_tokens": "Tokens",
             "output_syntax": "Syntax",
+            "output_semantic": "Semantic",
+            "output_ast": "AST",
             "output_regex": "Regex Search",
             "output_placeholder": "Analysis results will be shown here",
+            "ast_placeholder": "AST will be shown here",
             "token_col_code": "Code",
             "token_col_type": "Token Type",
             "token_col_lexeme": "Lexeme",
@@ -1844,6 +2572,9 @@ class MainWindow(QMainWindow):
             "syntax_col_fragment": "Invalid Fragment",
             "syntax_col_location": "Location",
             "syntax_col_description": "Description",
+            "semantic_col_fragment": "Invalid Fragment",
+            "semantic_col_location": "Location",
+            "semantic_col_description": "Description",
             "regex_col_value": "Matched Substring",
             "regex_col_location": "Start Position",
             "regex_col_length": "Length",
@@ -1881,6 +2612,7 @@ class MainWindow(QMainWindow):
         self.act_editor_font_dec.setText(t["editor_font_dec"])
         self.act_output_font_inc.setText(t["output_font_inc"])
         self.act_output_font_dec.setText(t["output_font_dec"])
+        self.act_show_ast.setText(t["show_ast"])
         self.act_text_task.setText(t["topic_task"])
         self.act_text_grammar.setText(t["topic_grammar"])
         self.act_text_classification.setText(t["topic_classification"])
@@ -1895,8 +2627,11 @@ class MainWindow(QMainWindow):
         self.output_tabs.setTabText(0, t["output_result"])
         self.output_tabs.setTabText(1, t["output_tokens"])
         self.output_tabs.setTabText(2, t["output_syntax"])
-        self.output_tabs.setTabText(3, t["output_regex"])
+        self.output_tabs.setTabText(3, t["output_semantic"])
+        self.output_tabs.setTabText(4, t["output_ast"])
+        self.output_tabs.setTabText(5, t["output_regex"])
         self.output_text.setPlaceholderText(t["output_placeholder"])
+        self.output_ast_text.setPlaceholderText(t["ast_placeholder"])
         self.output_table.setHorizontalHeaderLabels(
             [
                 t["token_col_code"],
@@ -1910,6 +2645,13 @@ class MainWindow(QMainWindow):
                 t["syntax_col_fragment"],
                 t["syntax_col_location"],
                 t["syntax_col_description"],
+            ]
+        )
+        self.output_semantic_table.setHorizontalHeaderLabels(
+            [
+                t["semantic_col_fragment"],
+                t["semantic_col_location"],
+                t["semantic_col_description"],
             ]
         )
         self.output_regex_table.setHorizontalHeaderLabels(
